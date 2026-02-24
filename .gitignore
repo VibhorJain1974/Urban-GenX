@@ -5,3 +5,20 @@ checkpoints/
 *.h5
 *.pkl
 .streamlit/
+
+# Exclude large datasets
+data/
+archive.zip
+
+# Exclude model weights (too large for GitHub)
+checkpoints/*.pth
+
+# Exclude Python environment and caches
+__pycache__/
+*.pyc
+.venv/
+.env
+
+# Exclude IDE settings
+.vscode/
+.idea/
