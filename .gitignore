@@ -1,24 +1,32 @@
-__pycache__/
-*.pyc
-checkpoints/
-*.pth
-*.h5
-*.pkl
-.streamlit/
+# Create/overwrite .gitignore
+@"
+# Datasets (too large for GitHub)
+data/raw/
+data/processed/
 
-# Exclude large datasets
-data/
-archive.zip
-
-# Exclude model weights (too large for GitHub)
+# Checkpoints (too large)
 checkpoints/*.pth
 
-# Exclude Python environment and caches
+# Python cache
 __pycache__/
 *.pyc
-.venv/
+*.pyo
+*.pyd
 .env
+.venv
 
-# Exclude IDE settings
-.vscode/
-.idea/
+# Conda
+.conda/
+*.egg-info/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# OS files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Kaggle credentials
+kaggle.json
+"@ | Out-File -FilePath .gitignore -Encoding utf8

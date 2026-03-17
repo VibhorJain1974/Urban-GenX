@@ -1,39 +1,51 @@
 """
-Urban-GenX | USGS Water Data Downloader
-Downloads dissolved oxygen, pH, temperature, turbidity time series.
-Saves to data/raw/usgs_water/water_quality.csv
+Urban-GenX | USGS Water Data Downloader (Fixed Unpacking Error)
+Focusing on high-availability parameters for the Water VAE Node.
 """
 
-import dataretrieval.nwis as nwis
+from dataretrieval import nwis
 import pandas as pd
 import os
 
 os.makedirs("data/raw/usgs_water", exist_ok=True)
 
-# ── Example: Los Angeles County water quality sites ──────────────────────────
-# Parameter codes:
-#   00300 = Dissolved Oxygen (mg/L)
-#   00400 = pH
-#   00010 = Water Temperature (°C)
-#   63680 = Turbidity (FNU)
-#   00060 = Streamflow (ft³/s)
+# 11102300: Santa Clara River (Reliable for pH/Temp)
+# 11087020: LA River
+site_list = ["11102300", "11087020", "11094350"]
+# 00010 = Temp, 00400 = pH, 00060 = Discharge
+param_codes = ["00010", "00400", "00060"]
 
-sites = [
-    "11087020",   # Los Angeles River at Wardlow Road
-    "11098000",   # San Gabriel River at Whittier Narrows
-    "11119750",   # Santa Clara River near Ventura
-]
+all_data = []
 
-param_codes = ["00300", "00400", "00010", "63680", "00060"]
+print("[USGS] Pulling multi-site water data...")
 
-print("[USGS] Downloading water quality data...")
-df, meta = nwis.get_qwdata(
-    sites=sites,
-    parameterCd=param_codes,
-    start="2010-01-01",
-    end="2020-12-31",
-)
+for site in site_list:
+    try:
+        print(f"-> Querying Site: {site}")
+        
+        # FIXED: get_record for 'iv' returns only 'df', not 'df, meta'
+        df = nwis.get_record(
+            sites=site, 
+            service='iv', 
+            parameterCd=param_codes, 
+            start="2023-01-01", 
+            end="2024-01-01"
+        )
+        
+        if df is not None and not df.empty:
+            print(f"   ✅ Found {len(df)} records for {site}")
+            all_data.append(df.reset_index())
+        else:
+            print(f"   ⚠️ No 'iv' data for {site} in this range.")
+            
+    except Exception as e:
+        print(f"   ❌ Skip {site}: {e}")
 
-df.to_csv("data/raw/usgs_water/water_quality.csv")
-print(f"[USGS] Saved {len(df)} records → data/raw/usgs_water/water_quality.csv")
-print(df.head())
+if all_data:
+    final_df = pd.concat(all_data, ignore_index=True)
+    output_path = "data/raw/usgs_water/water_quality.csv"
+    final_df.to_csv(output_path, index=False)
+    print(f"\n🚀 [USGS] Success! Master file created: {output_path}")
+    print(final_df.head())
+else:
+    print("\n💀 [USGS] Error: All sites returned empty. Ensure you have an internet connection.")
