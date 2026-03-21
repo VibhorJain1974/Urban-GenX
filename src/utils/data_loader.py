@@ -110,7 +110,15 @@ class UrbanSound8KDataset(Dataset):
         path, label = self.samples[idx]
         try:
             y, _ = librosa.load(path, sr=self.sr, mono=True)
-            mfcc = librosa.feature.mfcc(y=y, sr=self.sr, n_mfcc=self.n_mfcc)
+            if len(y) < 1024:
+                y = np.pad(y, (0, 1024 - len(y)))
+            mfcc = librosa.feature.mfcc(
+                y=y,
+                sr=self.sr,
+                n_mfcc=self.n_mfcc,
+                n_fft=1024,
+                hop_length=512,
+            )
         except Exception:
             # Return zeros on corrupt files (UrbanSound8K has a few)
             mfcc = np.zeros((self.n_mfcc, self.time_frames), dtype=np.float32)

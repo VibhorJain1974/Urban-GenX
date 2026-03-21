@@ -5,6 +5,8 @@ Run: python tests/check_all.py
 
 import os
 import sys
+from unittest import result
+from sentence_transformers import models
 import torch
 sys.path.insert(0, os.path.abspath("."))
 
@@ -86,7 +88,9 @@ print("\n[4] Semantic Interface")
 try:
     from models.transformer_core import SemanticInterface
     si = SemanticInterface()
-    result = si.query_to_condition("construction site near busy road")
+    preset = si.query("construction site near busy road")
+    cond = si.build_condition_tensor(preset, img_size=64, num_classes=35, batch_size=1)
+    print(preset["scene_name"], cond.shape)
     print(f"  ✅ Query resolved to preset: {result.get('preset', 'N/A')}")
     print(f"  ✅ Condition tensor shape: {result.get('condition', torch.zeros(1)).shape}")
 except Exception as e:
