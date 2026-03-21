@@ -8,6 +8,7 @@ NOTE: Cityscapes requires manual registration at cityscapes-dataset.com
 import os
 import subprocess
 import sys
+import urllib.request  # ensures urllib.request exists for libs that do urllib.request.
 
 def make_dirs():
     for d in [
