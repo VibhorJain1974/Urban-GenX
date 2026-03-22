@@ -1,292 +1,320 @@
+"""
+Urban-GenX | Sanity Check Suite
+Run: python tests/check_all.py
+Verifies: data loaders, model architectures, checkpoints, semantic interface, DP attachment.
+All checks are self-contained — no training or GPU needed.
+Exit code 0 = all passed. Non-zero = check failed (error printed).
+"""
+
 import os
 import sys
-import math
 import traceback
-from pathlib import Path
+
+# ── Path setup ────────────────────────────────────────────────────────────────
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 import torch
+import numpy as np
 
-ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT))
-
-
-def banner(title: str):
-    print("\n" + "=" * 72)
-    print(title)
-    print("=" * 72)
+PASS = "  ✅ PASS"
+FAIL = "  ❌ FAIL"
+SKIP = "  ⏭️  SKIP"
+results = []
 
 
-def ok(msg: str):
-    print(f"[PASS] {msg}")
-
-
-def warn(msg: str):
-    print(f"[WARN] {msg}")
-
-
-def fail(msg: str):
-    print(f"[FAIL] {msg}")
-
-
-def skip(msg: str):
-    print(f"[SKIP] {msg}")
-
-
-def exists(path: str) -> bool:
-    return Path(path).exists()
-
-
-def is_finite_number(x) -> bool:
+def check(name, fn):
+    """Run a check function and record pass/fail."""
+    print(f"\n[CHECK] {name}")
     try:
-        return math.isfinite(float(x))
-    except Exception:
-        return False
-
-
-def check_environment():
-    banner("1. Environment")
-    try:
-        import torch
-        ok(f"PyTorch: {torch.__version__}")
+        msg = fn()
+        print(f"{PASS}" + (f" — {msg}" if msg else ""))
+        results.append((name, True, ""))
     except Exception as e:
-        fail(f"PyTorch import failed: {e}")
-
-    try:
-        import flwr
-        ok(f"Flower: {flwr.__version__}")
-    except Exception as e:
-        fail(f"Flower import failed: {e}")
-
-    try:
-        import librosa
-        ok(f"librosa: {librosa.__version__}")
-    except Exception as e:
-        fail(f"librosa import failed: {e}")
-
-    try:
-        from sentence_transformers import SentenceTransformer  # noqa
-        ok("sentence-transformers import OK")
-    except Exception as e:
-        warn(f"sentence-transformers import failed, fallback mode likely active: {e}")
+        tb = traceback.format_exc()
+        print(f"{FAIL} — {e}")
+        print(tb)
+        results.append((name, False, str(e)))
 
 
-def check_utility():
-    banner("2. Utility / Traffic VAE")
+# ─────────────────────────────────────────────────────────────────────────────
+# CHECK 1: UrbanSound8K data loader
+# ─────────────────────────────────────────────────────────────────────────────
+def check_urbansound():
+    from src.utils.data_loader import UrbanSound8KDataset
+    root = "data/raw/urbansound8k"
+    if not os.path.exists(os.path.join(root, "metadata", "UrbanSound8K.csv")):
+        raise FileNotFoundError(f"Missing {root}/metadata/UrbanSound8K.csv — run folder-fix commands first")
+    d = UrbanSound8KDataset(root, folds=[1])   # folds=[1] is fast (subset)
+    assert len(d) > 0, "Dataset is empty"
+    x, y = d[0]
+    assert x.shape == torch.Size([1, 40, 128]), f"Expected [1,40,128], got {x.shape}"
+    assert isinstance(int(y), int), f"Label not int: {y}"
+    return f"{len(d)} clips in fold 1, MFCC shape {tuple(x.shape)}, label {y}"
 
-    ckpt_path = ROOT / "checkpoints" / "utility_traffic_checkpoint.pth"
-    if not ckpt_path.exists():
-        fail(f"Missing checkpoint: {ckpt_path}")
-        return
-
-    try:
-        from torch.utils.data import DataLoader
-        from src.utils.data_loader import METRLADataset
-        from models.utility_vae import build_traffic_vae, UtilityVAE
-
-        ck = torch.load(ckpt_path, map_location="cpu")
-        ok(f"Checkpoint found at epoch {ck.get('epoch', '?')}")
-
-        ds = METRLADataset(str(ROOT / "data" / "raw" / "metr-la" / "metr-la.h5"))
-        dl = DataLoader(ds, batch_size=16, shuffle=True, num_workers=0)
-        x, _ = next(iter(dl))
-        x = x.view(x.size(0), -1)
-
-        model = build_traffic_vae(seq_len=12, n_sensors=207, latent_dim=64)
-        model.load_state_dict(ck["model"])
-        model.eval()
-
-        with torch.no_grad():
-            recon, mu, lv = model(x)
-            loss = UtilityVAE.loss(recon, x, mu, lv, beta=1.0)
-
-        ok(f"Traffic forward pass OK | recon={tuple(recon.shape)} | loss={float(loss):.4f}")
-
-        if "avg_loss" in ck and "avg_val" in ck:
-            ok(f"Stored metrics | train={ck['avg_loss']:.4f} | val={ck['avg_val']:.4f}")
-
-    except Exception as e:
-        fail(f"Utility check failed: {e}")
-        traceback.print_exc()
+check("UrbanSound8K loader", check_urbansound)
 
 
-def check_acoustic():
-    banner("3. Acoustic VAE")
+# ─────────────────────────────────────────────────────────────────────────────
+# CHECK 2: METR-LA data loader
+# ─────────────────────────────────────────────────────────────────────────────
+def check_metrla():
+    from src.utils.data_loader import METRLADataset
+    h5 = "data/raw/metr-la/metr-la.h5"
+    if not os.path.exists(h5):
+        raise FileNotFoundError(f"Missing {h5} — download from Kaggle (annnnguyen/metr-la-dataset)")
+    d = METRLADataset(h5, seq_len=12, pred_len=12)
+    assert len(d) > 0, "Dataset empty"
+    x, y = d[0]
+    assert x.shape == torch.Size([12, 207]), f"Expected [12,207], got {x.shape}"
+    return f"{len(d)} windows, x shape {tuple(x.shape)}, y shape {tuple(y.shape)}"
 
-    ckpt_path = ROOT / "checkpoints" / "acoustic_checkpoint.pth"
-    best_path = ROOT / "checkpoints" / "acoustic_best.pth"
+check("METR-LA loader", check_metrla)
 
-    if not ckpt_path.exists() and not best_path.exists():
-        warn("No acoustic checkpoint found yet. Finish train_acoustic.py first.")
-        return
 
-    chosen = best_path if best_path.exists() else ckpt_path
+# ─────────────────────────────────────────────────────────────────────────────
+# CHECK 3: Cityscapes data loader (skipped if data absent)
+# ─────────────────────────────────────────────────────────────────────────────
+def check_cityscapes():
+    from src.utils.data_loader import CityscapesDataset
+    root = "data/raw/cityscapes"
+    left = os.path.join(root, "leftImg8bit", "train")
+    gt   = os.path.join(root, "gtFine", "train")
+    if not os.path.exists(left) or not os.path.exists(gt):
+        raise FileNotFoundError(
+            f"Cityscapes not found. Expected:\n"
+            f"  {left}\n  {gt}\n"
+            f"Download from https://www.cityscapes-dataset.com/register/"
+        )
+    d = CityscapesDataset(root, split="train", img_size=64)
+    assert len(d) > 0, "Dataset empty"
+    img, cond = d[0]
+    assert img.shape  == torch.Size([3, 64, 64]),  f"Image shape: {img.shape}"
+    assert cond.shape == torch.Size([35, 64, 64]), f"Cond shape: {cond.shape}"
+    assert float(img.min()) >= -1.05 and float(img.max()) <= 1.05, "Image not in [-1,1]"
+    return f"{len(d)} samples, img {tuple(img.shape)}, cond {tuple(cond.shape)}"
 
-    try:
+check("Cityscapes loader", check_cityscapes)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# CHECK 4: AcousticVAE forward pass + loss
+# ─────────────────────────────────────────────────────────────────────────────
+def check_acoustic_vae():
+    from models.acoustic_vae import AcousticVAE
+    model = AcousticVAE(mfcc_bins=40, time_frames=128, latent_dim=64)
+    model.eval()
+    x = torch.randn(2, 1, 40, 128)
+    with torch.no_grad():
+        recon, mu, lv = model(x)
+    assert recon.shape == x.shape, f"Recon shape {recon.shape} != {x.shape}"
+    assert mu.shape    == torch.Size([2, 64])
+    assert lv.shape    == torch.Size([2, 64])
+
+    loss = AcousticVAE.loss(recon, x, mu, lv, beta=1.0)
+    assert torch.isfinite(loss), f"Loss is not finite: {loss}"
+    assert float(loss) < 10.0, f"Loss too large ({float(loss):.4f}) — check mean-reduction fix"
+
+    # Generation
+    gen = model.generate(n_samples=3)
+    assert gen.shape == torch.Size([3, 1, 40, 128])
+    return f"loss={float(loss):.4f}, recon {tuple(recon.shape)}, gen {tuple(gen.shape)}"
+
+check("AcousticVAE forward + loss + generate", check_acoustic_vae)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# CHECK 5: Vision GAN forward pass
+# ─────────────────────────────────────────────────────────────────────────────
+def check_vision_gan():
+    from models.vision_gan import Generator, Discriminator
+    G = Generator(noise_dim=100, num_classes=35)
+    D = Discriminator(num_classes=35)
+    G.eval(); D.eval()
+
+    cond = torch.randn(2, 35, 64, 64)
+    with torch.no_grad():
+        fake = G(cond)
+        score = D(cond, fake)
+
+    assert fake.shape  == torch.Size([2, 3, 64, 64]), f"G output: {fake.shape}"
+    assert float(fake.min()) >= -1.05 and float(fake.max()) <= 1.05, "G output not in [-1,1]"
+    assert torch.isfinite(fake).all(), "G output has NaN/Inf"
+    assert torch.isfinite(score).all(), f"D output has NaN/Inf"
+    return f"G: {tuple(fake.shape)}, D: {tuple(score.shape)}, G_range=[{float(fake.min()):.3f}, {float(fake.max()):.3f}]"
+
+check("Vision GAN (G + D) forward pass", check_vision_gan)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# CHECK 6: UtilityVAE forward pass
+# ─────────────────────────────────────────────────────────────────────────────
+def check_utility_vae():
+    from models.utility_vae import build_traffic_vae, UtilityVAE
+    model = build_traffic_vae(seq_len=12, n_sensors=207, latent_dim=64)
+    model.eval()
+    x = torch.randn(2, 12 * 207)
+    with torch.no_grad():
+        recon, mu, lv = model(x)
+    assert recon.shape == x.shape
+    assert torch.isfinite(recon).all()
+
+    # Decode
+    z = torch.randn(1, model.latent_dim)
+    out = model.decode(z)
+    assert out.shape == torch.Size([1, 12 * 207])
+    return f"recon {tuple(recon.shape)}, decode {tuple(out.shape)}, finite={torch.isfinite(recon).all().item()}"
+
+check("UtilityVAE (traffic) forward + decode", check_utility_vae)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# CHECK 7: Checkpoint loading — acoustic + utility
+# ─────────────────────────────────────────────────────────────────────────────
+def check_checkpoints():
+    msgs = []
+
+    # Utility checkpoint (should exist after train_utility.py completed)
+    util_path = "checkpoints/utility_traffic_checkpoint.pth"
+    if os.path.exists(util_path):
+        from models.utility_vae import build_traffic_vae
+        ck = torch.load(util_path, map_location="cpu")
+        assert "model" in ck, "No 'model' key in utility checkpoint"
+        m = build_traffic_vae(seq_len=12, n_sensors=207, latent_dim=64)
+        m.load_state_dict(ck["model"])
+        # Verify no NaN in weights
+        for name, p in m.named_parameters():
+            assert torch.isfinite(p).all(), f"NaN/Inf in utility param: {name}"
+        msgs.append(f"Utility ✅ epoch={ck.get('epoch','?')} val={ck.get('avg_val', '?')}")
+    else:
+        msgs.append(f"Utility ⏭️  not found at {util_path}")
+
+    # Acoustic checkpoint (may not exist if training incomplete)
+    acou_path = "checkpoints/acoustic_checkpoint.pth"
+    if os.path.exists(acou_path):
         from models.acoustic_vae import AcousticVAE
+        ck = torch.load(acou_path, map_location="cpu")
+        assert "model" in ck, "No 'model' key in acoustic checkpoint"
+        cfg = ck.get("model_config", {"mfcc_bins": 40, "time_frames": 128, "latent_dim": 64})
+        m = AcousticVAE(**cfg)
+        m.load_state_dict(ck["model"])
+        for name, p in m.named_parameters():
+            assert torch.isfinite(p).all(), f"NaN/Inf in acoustic param: {name}"
+        msgs.append(f"Acoustic ✅ epoch={ck.get('epoch','?')} val={ck.get('avg_val_loss', '?'):.4f}"
+                    if isinstance(ck.get('avg_val_loss'), float)
+                    else f"Acoustic ✅ epoch={ck.get('epoch','?')}")
+    else:
+        msgs.append(f"Acoustic ⏭️  not found (run train_acoustic.py)")
 
-        ck = torch.load(chosen, map_location="cpu")
-        cfg = ck.get("model_config", {})
-        model = AcousticVAE(
-            mfcc_bins=cfg.get("mfcc_bins", 40),
-            time_frames=cfg.get("time_frames", 128),
-            latent_dim=cfg.get("latent_dim", 64),
-        )
-        model.load_state_dict(ck["model"])
-        model.eval()
-
-        with torch.no_grad():
-            synth = model.generate(n_samples=4)
-
-        ok(f"Acoustic checkpoint OK: {chosen.name}")
-        ok(f"Generated MFCC batch shape: {tuple(synth.shape)}")
-        ok(f"Value range: [{float(synth.min()):.4f}, {float(synth.max()):.4f}]")
-
-        if "avg_loss" in ck:
-            ok(f"Stored train loss: {float(ck['avg_loss']):.4f}")
-        if "avg_val_loss" in ck:
-            ok(f"Stored val loss: {float(ck['avg_val_loss']):.4f}")
-
-    except Exception as e:
-        fail(f"Acoustic check failed: {e}")
-        traceback.print_exc()
-
-
-def check_vision():
-    banner("4. Vision DP-GAN")
-
-    ckpt_path = ROOT / "checkpoints" / "vision_checkpoint.pth"
-    if not ckpt_path.exists():
-        warn("No vision checkpoint found yet. Finish train_vision.py first.")
-        return
-
-    try:
-        from models.vision_gan import Generator
-
-        ck = torch.load(ckpt_path, map_location="cpu")
+    # Vision checkpoint
+    vis_path = "checkpoints/vision_checkpoint.pth"
+    if os.path.exists(vis_path):
+        from models.vision_gan import Generator, Discriminator
+        ck = torch.load(vis_path, map_location="cpu")
+        assert "generator" in ck, "No 'generator' key in vision checkpoint"
         G = Generator(noise_dim=100, num_classes=35)
+        D = Discriminator(num_classes=35)
         G.load_state_dict(ck["generator"])
-        G.eval()
+        D.load_state_dict(ck["discriminator"])
+        for name, p in G.named_parameters():
+            assert torch.isfinite(p).all(), f"NaN/Inf in G param: {name}"
+        for name, p in D.named_parameters():
+            assert torch.isfinite(p).all(), f"NaN/Inf in D param: {name}"
+        msgs.append(f"Vision ✅ epoch={ck.get('epoch','?')}")
+    else:
+        msgs.append(f"Vision ⏭️  not found (run train_vision.py)")
 
-        cond = torch.zeros(2, 35, 64, 64)
-        cond[:, 7, :, :] = 1.0  # simple road prior
+    return " | ".join(msgs)
 
-        with torch.no_grad():
-            fake = G(cond)
-
-        ok(f"Vision checkpoint OK: epoch {ck.get('epoch', '?')}")
-        ok(f"Generated image tensor shape: {tuple(fake.shape)}")
-        ok(f"Value range: [{float(fake.min()):.4f}, {float(fake.max()):.4f}]")
-
-        d_loss = ck.get("d_loss", None)
-        g_loss = ck.get("g_loss", None)
-
-        if d_loss is not None:
-            if is_finite_number(d_loss):
-                ok(f"d_loss finite: {float(d_loss):.4f}")
-            else:
-                warn(f"d_loss is not finite: {d_loss}")
-        if g_loss is not None:
-            if is_finite_number(g_loss):
-                ok(f"g_loss finite: {float(g_loss):.4f}")
-            else:
-                warn(f"g_loss is not finite: {g_loss}")
-
-    except Exception as e:
-        fail(f"Vision check failed: {e}")
-        traceback.print_exc()
+check("Checkpoint loading (all models)", check_checkpoints)
 
 
-def check_semantic():
-    banner("5. Semantic Interface")
+# ─────────────────────────────────────────────────────────────────────────────
+# CHECK 8: Semantic Interface
+# ─────────────────────────────────────────────────────────────────────────────
+def check_semantic_interface():
+    from models.transformer_core import SemanticInterface
+    si = SemanticInterface()
 
-    try:
-        from models.transformer_core import SemanticInterface
+    # Test query
+    preset = si.query("busy intersection")
+    required_keys = {"scene_name", "acoustic_class", "traffic_multiplier", "noise_level", "green_space"}
+    missing = required_keys - set(preset.keys())
+    assert not missing, f"Preset missing keys: {missing}"
 
-        si = SemanticInterface(use_sbert=True)
-        preset = si.query("busy intersection with heavy traffic")
-        cond = si.build_condition_tensor(preset, img_size=64, num_classes=35, batch_size=2)
+    # Test build_condition_tensor
+    cond = si.build_condition_tensor(preset, img_size=64, num_classes=35, batch_size=1)
+    assert cond.shape == torch.Size([1, 35, 64, 64]), f"Cond tensor shape: {cond.shape}"
+    assert torch.isfinite(cond).all()
 
-        ok(f"Semantic query matched preset: {preset.get('scene_name', 'UNKNOWN')}")
-        ok(f"Condition tensor shape: {tuple(cond.shape)}")
+    # List scenes
+    scenes = si.list_scenes()
+    assert len(scenes) >= 8, f"Expected ≥8 presets, got {len(scenes)}"
 
-    except Exception as e:
-        fail(f"Semantic interface check failed: {e}")
-        traceback.print_exc()
+    return (f"scene='{preset['scene_name']}' | "
+            f"acoustic={preset.get('acoustic_class_name', preset['acoustic_class'])} | "
+            f"traffic_mult={preset['traffic_multiplier']} | "
+            f"scenes available: {len(scenes)}")
 
-
-def check_population():
-    banner("6. Population Module")
-
-    candidates = [
-        ROOT / "models" / "population_vae.py",
-        ROOT / "models" / "population_model.py",
-        ROOT / "src" / "training" / "train_population.py",
-    ]
-
-    found = [str(p) for p in candidates if p.exists()]
-    if not found:
-        skip("Population module not implemented in current repo. Mark as future work.")
-        return
-
-    ok(f"Population-related files found: {found}")
+check("Semantic Interface (query + condition tensor)", check_semantic_interface)
 
 
-def check_federated():
-    banner("7. Federated Learning")
+# ─────────────────────────────────────────────────────────────────────────────
+# CHECK 9: DP attachment (dry-run with tiny dataset)
+# ─────────────────────────────────────────────────────────────────────────────
+def check_dp_attachment():
+    """Verify Opacus PrivacyEngine can attach to Discriminator cleanly."""
+    from models.vision_gan import Discriminator
+    from opacus import PrivacyEngine
+    from opacus.validators import ModuleValidator
+    from torch.utils.data import TensorDataset, DataLoader
 
-    try:
-        from src.federated.client_vision import VisionClient
-        from src.federated.client_acoustic import AcousticClient
+    D = Discriminator(num_classes=35)
+    D = ModuleValidator.fix(D)
+    errors = ModuleValidator.validate(D, strict=False)
+    assert len(errors) == 0, f"ModuleValidator errors: {errors}"
 
-        v = VisionClient(client_id="0")
-        a = AcousticClient(client_id="0")
+    opt = torch.optim.Adam(D.parameters(), lr=2e-4, betas=(0.5, 0.999))
 
-        vp = v.get_parameters({})
-        ap = a.get_parameters({})
+    # Minimal DataLoader for PrivacyEngine (need >batch_size samples)
+    dummy = TensorDataset(torch.randn(20, 38, 64, 64))  # 38 = 35 cond + 3 rgb
+    loader = DataLoader(dummy, batch_size=4)
 
-        ok(f"Vision client parameter tensors: {len(vp)}")
-        ok(f"Acoustic client parameter tensors: {len(ap)}")
+    pe = PrivacyEngine(secure_mode=False, accountant="rdp")
+    D, opt, loader = pe.make_private_with_epsilon(
+        module=D,
+        optimizer=opt,
+        data_loader=loader,
+        target_epsilon=10.0,
+        target_delta=1e-5,
+        max_grad_norm=1.0,
+        epochs=50,
+    )
+    eps = pe.get_epsilon(1e-5)
+    assert eps > 0, "Privacy engine returned non-positive epsilon"
+    assert hasattr(D, "disable_hooks"), "D missing disable_hooks (Opacus GradSampleModule)"
+    assert hasattr(D, "enable_hooks"),  "D missing enable_hooks"
+    return f"DP attached OK | σ noise inferred | ε(δ=1e-5)={eps:.4f} | disable_hooks: ✅"
 
-        # This is the key sanity check:
-        # Current repo mixes heterogeneous models in one FedAvg run, which is not valid.
-        same_length = len(vp) == len(ap)
-        same_shapes = same_length and all(
-            tuple(x.shape) == tuple(y.shape)
-            for x, y in zip(vp, ap)
-        )
-
-        if same_shapes:
-            ok("Vision and Acoustic parameter structures match (unexpected but valid for FedAvg).")
-        else:
-            warn(
-                "Current FL design mixes heterogeneous models (Vision D vs Acoustic VAE). "
-                "Do NOT aggregate them in one FedAvg server. Use separate modality servers."
-            )
-
-        # Server import
-        from src.federated.server import get_strategy
-        strategy = get_strategy()
-        ok(f"Server strategy import OK: {strategy.__class__.__name__}")
-
-    except Exception as e:
-        fail(f"Federated check failed: {e}")
-        traceback.print_exc()
+check("Opacus DP attachment to Discriminator", check_dp_attachment)
 
 
-def main():
-    banner("Urban-GenX | Final System Validation")
+# ─────────────────────────────────────────────────────────────────────────────
+# Summary
+# ─────────────────────────────────────────────────────────────────────────────
+print("\n" + "=" * 60)
+print("URBAN-GENX SANITY CHECK SUMMARY")
+print("=" * 60)
+total  = len(results)
+passed = sum(1 for _, ok, _ in results if ok)
+failed = sum(1 for _, ok, _ in results if not ok)
 
-    check_environment()
-    check_utility()
-    check_acoustic()
-    check_vision()
-    check_semantic()
-    check_population()
-    check_federated()
+for name, ok, err in results:
+    status = "✅ PASS" if ok else "❌ FAIL"
+    print(f"  {status}  {name}")
+    if not ok:
+        print(f"         └─ {err[:120]}")
 
-    banner("Validation Finished")
-    print("Review WARN / FAIL items before final submission.")
+print(f"\nResult: {passed}/{total} passed" + (f" | {failed} FAILED" if failed else " | All clear 🎉"))
+print("=" * 60)
 
-
-if __name__ == "__main__":
-    main()
+sys.exit(0 if failed == 0 else 1)
