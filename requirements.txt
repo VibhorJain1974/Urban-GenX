@@ -1,17 +1,42 @@
-# requirements.txt — Pin versions for reproducibility
+# Urban-GenX Requirements
+# Python 3.10+, CPU-only (Intel i5-8250U, 12GB RAM optimized)
+
+# Core ML Framework
 torch==2.1.0
 torchvision==0.16.0
+
+# Federated Learning
 flwr==1.5.0
+
+# Differential Privacy
 opacus==1.4.0
+
+# Audio Processing
 librosa==0.10.1
+soundfile==0.12.1
+
+# Dashboard & UI
 streamlit==1.28.0
+
+# Progress & Monitoring
 tqdm==4.66.1
-requests==2.31.0         # for ntfy.sh
+requests==2.31.0
+
+# Data Handling
 numpy==1.24.4
 pandas==2.1.1
+scipy==1.15.3
+h5py==3.10.0
+pillow==10.1.0
+
+# ML Utilities
 scikit-learn==1.3.2
 matplotlib==3.8.0
-pillow==10.1.0
-h5py==3.10.0
-sentence-transformers==2.2.2   # Semantic Interface (Phase 1)
-dataretrieval
+
+# NLP & Semantic Search (OPTIONAL — code has keyword fallback)
+ sentence-transformers==2.2.2  # Skip if import fails; keyword-matching still works
+ transformers==4.35.2
+huggingface-hub==0.36.2
+
+# Utilities
+pyyaml==6.0.3

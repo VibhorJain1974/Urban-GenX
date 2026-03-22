@@ -188,9 +188,12 @@ def train():
             f"Train={avg_loss:.4f} | Val={avg_val:.4f} | Mode={CFG['mode']}"
         )
 
-    notify_training_complete(CFG["num_epochs"], avg_loss)
-    print("[DONE] Utility training complete.")
-
+        # Only notify if we actually trained (loop executed)
+    if start_epoch < CFG["num_epochs"]:
+        notify_training_complete(CFG["num_epochs"], avg_loss)
+        print(f"[DONE] Utility training complete. Final loss: {avg_loss:.4f}")
+    else:
+        print(f"[INFO] Training already complete at epoch {start_epoch}. No new training performed.")
 
 if __name__ == "__main__":
     try:
