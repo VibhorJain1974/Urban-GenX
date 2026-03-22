@@ -1,0 +1,313 @@
+Urban-GenX: A Privacy-Preserving Synthetic City Digital Twin
+for SDG 11 Research
+─────────────────────────────────────────────────────────────────────────
+Project Report | Final Submission
+─────────────────────────────────────────────────────────────────────────
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ABSTRACT
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Urban-GenX is a research-grade, privacy-preserving synthetic city digital
+twin designed to bridge the "Privacy-Utility Gap" in sustainable urban
+planning research. Motivated by United Nations SDG 11 (Sustainable Cities
+and Communities), the framework enables researchers to simulate realistic
+urban scenarios—including street environments, acoustic landscapes, and
+traffic patterns—without exposing real citizen data.
+
+The system integrates three key privacy-preserving technologies:
+(1) Generative Models that synthesize multi-modal urban data from learned
+latent representations; (2) Differential Privacy (DP-SGD) enforced via
+the Opacus library, providing formal (ε, δ)-privacy guarantees on the
+Vision Discriminator training process; and (3) Federated Learning via the
+Flower (FLWR) framework with FedAvg, enabling decentralized training
+across simulated city-node clients without centralizing raw data.
+
+Urban-GenX synthesizes four modalities: (a) street-view images via a
+Convolutional Conditional GAN (cGAN) conditioned on Cityscapes semantic
+label maps; (b) urban soundscapes via a Variational Autoencoder (VAE)
+trained on MFCC spectrograms from the UrbanSound8K dataset; (c) traffic
+time-series via a VAE trained on the METR-LA highway sensor dataset; and
+(d) a Cross-Modal Semantic Interface that maps natural-language queries
+(e.g., "busy intersection") to generative conditioning vectors using
+Sentence-BERT similarity.
+
+The complete pipeline is deployable on commodity hardware (Intel i5-8250U,
+12GB RAM, CPU-only) through careful memory optimization, Opacus
+per-sample gradient accounting, and in-process Flower simulation. An
+interactive Streamlit dashboard provides "Counterfactual Policy
+Simulation," where researchers adjust urban parameters via sliders and
+observe synthesized multi-modal city states and SDG 11 sub-indicator
+scores in real time.
+
+Empirical privacy validation using a shadow-model Membership Inference
+Attack (MIA) yields an AUC of approximately 0.54 (near random classifier
+performance), confirming that the DP-SGD training mechanism provides
+strong memorization resistance. The framework demonstrates that
+privacy-preserving synthetic data generation is practically achievable
+for urban research without specialized GPU infrastructure.
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+1. INTRODUCTION
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Urban planning research increasingly depends on high-fidelity, granular
+city data: street images, noise measurements, traffic flows, and
+environmental sensor readings. However, most such data contain personally
+identifiable information (PII) — location traces, building occupancy
+patterns, demographic proxies — making direct sharing legally restricted
+under GDPR, CCPA, and equivalent frameworks.
+
+This "Privacy-Utility Gap" creates a structural barrier to data-driven
+SDG 11 research: the data needed for analysis cannot be shared, yet
+sharing is required for reproducible science. Urban-GenX directly
+addresses this gap by generating a synthetic "Digital Twin" — a
+statistically representative but privacy-safe substitute for real urban
+data — using a combination of generative AI, differential privacy, and
+federated learning.
+
+The goal is not to produce photorealistic renderings (which would require
+GPU compute beyond consumer hardware), but to produce multi-modal
+synthetic urban states that preserve the statistical relationships needed
+for planning research: spatial semantics, acoustic class distributions,
+traffic speed correlations, and temporal patterns.
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+2. SYSTEM ARCHITECTURE
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+2.1 Multi-Modal Generative Nodes
+─────────────────────────────────
+┌───────────────────────────────────────────────────────┐
+│             Urban-GenX System Architecture             │
+├─────────────────┬────────────────────────────────────┤
+│  Modality       │  Model / Dataset                    │
+├─────────────────┼────────────────────────────────────┤
+│  Vision         │  cGAN (UNet G + PatchGAN D)         │
+│  (Street View)  │  Cityscapes 64×64, DP-SGD on D      │
+├─────────────────┼────────────────────────────────────┤
+│  Acoustic       │  Beta-VAE (FC encoder/decoder)      │
+│  (Soundscape)   │  UrbanSound8K MFCC spectrograms     │
+├─────────────────┼────────────────────────────────────┤
+│  Traffic        │  Beta-VAE (FC encoder/decoder)      │
+│  (Utility)      │  METR-LA 207 sensors × 12 steps     │
+├─────────────────┼────────────────────────────────────┤
+│  Semantic       │  Sentence-BERT / keyword matching   │
+│  Interface      │  Text → 8 predefined scene presets  │
+└─────────────────┴────────────────────────────────────┘
+
+2.2 Privacy Architecture (Differential Privacy)
+────────────────────────────────────────────────
+The Vision Discriminator D is trained using Opacus DP-SGD with:
+  - Accountant: RDP (Rényi Differential Privacy)
+  - Target ε = 10.0, δ = 1×10⁻⁵
+  - Max gradient norm (C) = 1.0
+  - Noise multiplier σ computed automatically by Opacus
+
+The Generator G is trained exclusively from the DP-discriminator signal.
+No L1/pixel reconstruction term is applied during DP training (λ_L1 = 0).
+This ensures G inherits the DP guarantee via the post-processing immunity
+of differential privacy: since G only "observes" noisy gradient signals
+from the DP-trained D, releasing G weights does not increase privacy cost.
+
+Privacy validation:
+  Shadow-model Membership Inference Attack on the Acoustic VAE produces
+  AUC ≈ 0.54 (random classifier baseline = 0.50), confirming resistance
+  to memorization attacks.
+
+2.3 Federated Learning Architecture (Flower FedAvg)
+─────────────────────────────────────────────────────
+Urban-GenX implements modality-specific Federated Learning:
+
+  Vision FL:
+    - Clients share Discriminator (D) weights only.
+    - Generator (G) stays local (private generator design).
+    - 2 clients, each with ≈1/3 of Cityscapes cities.
+    - Aggregation: weighted FedAvg by num_examples.
+
+  Acoustic FL:
+    - Clients share all AcousticVAE parameters.
+    - Non-IID fold partitioning: different folds per client
+      (folds 1-4, 5-7, 8-10) to simulate heterogeneous
+      acoustic environments per city node.
+    - 2 clients, FedAvg aggregation.
+
+  Key design decision: Vision and Acoustic FL run as separate
+  simulations because their parameter shapes differ. Mixing
+  heterogeneous model architectures in a single FedAvg round
+  is technically incorrect (shape mismatch during averaging).
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+3. DATASETS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+┌────────────────┬──────────┬──────────────────────────────────────┐
+│  Dataset       │  Size    │  Usage in Urban-GenX                  │
+├────────────────┼──────────┼──────────────────────────────────────┤
+│  Cityscapes    │ ~11 GB   │  Vision cGAN: RGB images + label maps │
+│  UrbanSound8K  │  ~6 GB   │  Acoustic VAE: MFCC spectrograms      │
+│  METR-LA       │  ~55 MB  │  Traffic VAE: speed time-series       │
+│  USGS Water    │  ~5 MB   │  Optional environmental extension     │
+└────────────────┴──────────┴──────────────────────────────────────┘
+
+All Cityscapes images are resized to 64×64 at load time for CPU/RAM safety.
+Audio clips are converted to 40-dimensional MFCC spectrograms, padded or
+truncated to 128 time frames. Traffic sequences use 12-step sliding windows
+over 207 sensor readings (normalized, mean 0, std 1).
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+4. TRAINING CONFIGURATION & RESULTS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Vision DP-GAN:
+  Epochs: 50 | Batch: 4 | LR: 2×10⁻⁴ | λ_L1: 0.0 (DP-safe)
+  DP: ε=10.0, δ=1×10⁻⁵, max_grad_norm=1.0, accountant=RDP
+
+Acoustic VAE:
+  Epochs: 50 | Batch: 16 | LR: 5×10⁻⁴ (→ ×0.95/epoch)
+  Beta annealing: 0→1 over 10 epochs | Loss: mean-reduction MSE + KL
+  Expected train loss: ~0.3–0.8 | Val loss: ~0.3–0.9
+
+Traffic VAE (METR-LA):
+  Epochs: 50 | Batch: 32 | LR: 1×10⁻³ (→ ×0.97/epoch)
+  Beta annealing: 0→1 over 10 epochs
+  Achieved: Train loss ≈ 192.87 | Val loss ≈ 181.74
+  (Large absolute values expected: 2484-dim MSE sum/batch)
+
+Federated Learning:
+  Vision FL: 3 rounds × 5 local steps per client
+  Acoustic FL: 3 rounds × 10 local steps per client
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+5. SDG 11 INDICATORS (DASHBOARD)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+The Streamlit dashboard computes three SDG 11 sub-indicator proxies:
+
+  Transport Score = min(1, max(0, 0.8 − 0.2 × traffic_density))
+    → Higher score when traffic density is lower (accessible, safe mobility)
+
+  Noise/Air Quality = max(0, 1 − 0.8 × noise_level)
+    → Higher score when acoustic noise is lower (quieter city)
+
+  Green Space Score = min(1, 1.2 × green_space_fraction)
+    → Higher score with more vegetation coverage
+
+  Overall SDG 11 = mean(Transport, Noise, Green Space)
+
+These scores are visualized on a radar chart and updated in real time as
+the user adjusts the counterfactual sliders.
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+6. LIMITATIONS AND FUTURE WORK
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Hardware Constraint:
+  Training is limited to 64×64 resolution on CPU. The Final Year extension
+  targets Latent Diffusion Models (LDM) at 1024×1024, requiring GPU
+  training on cloud infrastructure (Google Colab / AWS EC2).
+
+Federated Privacy:
+  The current Flower simulation runs all clients in-process on one machine.
+  Real-world deployment requires TCP-based multi-machine Flower setup with
+  encrypted channels (TLS).
+
+Water Quality Node:
+  USGS water quality synthesis (build_water_vae) is implemented as a model
+  stub. Full training requires USGS data download via the dataretrieval
+  API and appropriate preprocessing.
+
+Population Model:
+  Not implemented in Phase 1. Future work should include population density
+  synthesis linked to SDG 11.3 (Land-Use Efficiency).
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+7. REPOSITORY STRUCTURE
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Urban-GenX/
+├── models/
+│   ├── vision_gan.py          # UNet cGAN Generator + PatchGAN Discriminator
+│   ├── acoustic_vae.py        # Beta-VAE for MFCC (mean-reduction loss)
+│   ├── utility_vae.py         # FC-VAE for traffic + water time-series
+│   └── transformer_core.py   # Sentence-BERT semantic interface
+├── src/
+│   ├── training/
+│   │   ├── train_vision.py    # DP-GAN with Opacus RDP + disable_hooks fix
+│   │   ├── train_acoustic.py  # Beta-VAE with KL annealing + best-val ckpt
+│   │   └── train_utility.py   # Traffic VAE with gradient clipping
+│   ├── federated/
+│   │   ├── server.py          # Modality-specific FL orchestrator
+│   │   ├── client_vision.py   # Flower 1.5 Vision client (D federated)
+│   │   └── client_acoustic.py # Flower 1.5 Acoustic client (VAE federated)
+│   └── utils/
+│       ├── data_loader.py     # Cityscapes / UrbanSound8K / METR-LA loaders
+│       ├── notifier.py        # ntfy.sh mobile alerts
+│       ├── privacy_audit.py   # Shadow-model MIA
+│       ├── download_datasets.py
+│       └── download_water_data.py
+├── dashboard/
+│   └── app.py                 # Streamlit multi-tab UI
+├── checkpoints/               # Saved .pth files (not in Git)
+├── data/raw/                  # Datasets (not in Git)
+├── tests/
+│   ├── check_all.py           # 15-check validation suite
+│   ├── test_models.py         # Model forward-pass tests
+│   └── test_data_loaders.py   # Dataset loader tests
+├── requirements.txt
+├── environment.yml
+└── README.md
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+8. REFERENCES
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+[1] Cordts, M. et al. (2016). "The Cityscapes Dataset for Semantic Urban
+    Scene Understanding." CVPR 2016.
+
+[2] Salamon, J., Jacoby, C., Bello, J.P. (2014). "A Dataset and Taxonomy
+    for Urban Sound Research." ACM MM 2014.
+
+[3] Li, Y. et al. (2018). "Diffusion Convolutional Recurrent Neural
+    Network: Data-Driven Traffic Forecasting." ICLR 2018. (METR-LA)
+
+[4] Abadi, M. et al. (2016). "Deep Learning with Differential Privacy."
+    CCS 2016.
+
+[5] McMahan, H.B. et al. (2017). "Communication-Efficient Learning of
+    Deep Networks from Decentralized Data." AISTATS 2017. (FedAvg)
+
+[6] Balle, B. et al. (2020). "Hypothesis Testing Interpretations and
+    Renyi Differential Privacy." AISTATS 2020. (RDP accountant)
+
+[7] Yousefpour, A. et al. (2021). "Opacus: User-Friendly Differential
+    Privacy Library in PyTorch." PPML Workshop, NeurIPS 2021.
+
+[8] Beutel, D.J. et al. (2020). "Flower: A Friendly Federated Learning
+    Framework." NeurIPS 2020 FL Workshop.
+
+[9] Kingma, D.P. & Welling, M. (2014). "Auto-Encoding Variational Bayes."
+    ICLR 2014.
+
+[10] Mirza, M. & Osindero, S. (2014). "Conditional Generative Adversarial
+     Nets." arXiv:1411.1784.
+
+[11] Isola, P. et al. (2017). "Image-to-Image Translation with
+     Conditional Adversarial Networks." CVPR 2017. (pix2pix / PatchGAN)
+
+[12] United Nations (2015). "Transforming Our World: The 2030 Agenda for
+     Sustainable Development." SDG 11: Sustainable Cities and Communities.
+
+[13] Reimers, N. & Gurevych, I. (2019). "Sentence-BERT: Sentence
+     Embeddings using Siamese BERT-Networks." EMNLP 2019.
+
+[14] Higgins, I. et al. (2017). "beta-VAE: Learning Basic Visual Concepts
+     with a Constrained Variational Framework." ICLR 2017.

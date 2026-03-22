@@ -1,42 +1,58 @@
-# Urban-GenX Requirements
-# Python 3.10+, CPU-only (Intel i5-8250U, 12GB RAM optimized)
+# ============================================================
+# Urban-GenX | requirements.txt  (FINAL CORRECTED VERSION)
+# Python 3.10, CPU-only (Intel i5-8250U, 12GB RAM)
+# Run: pip install -r requirements.txt
+# ============================================================
 
-# Core ML Framework
+# ─── Core ML ────────────────────────────────────────────────────────────────
 torch==2.1.0
 torchvision==0.16.0
 
-# Federated Learning
+# ─── Federated Learning ─────────────────────────────────────────────────────
 flwr==1.5.0
+# Ray is required by Flower's start_simulation() on all platforms
+ray==2.6.3
 
-# Differential Privacy
+# ─── Differential Privacy ───────────────────────────────────────────────────
 opacus==1.4.0
 
-# Audio Processing
+# ─── Audio Processing ───────────────────────────────────────────────────────
 librosa==0.10.1
 soundfile==0.12.1
 
-# Dashboard & UI
+# ─── Dashboard & UI ─────────────────────────────────────────────────────────
 streamlit==1.28.0
+altair==4.2.2
 
-# Progress & Monitoring
+# ─── Progress & Monitoring ──────────────────────────────────────────────────
 tqdm==4.66.1
 requests==2.31.0
 
-# Data Handling
+# ─── Data Handling ──────────────────────────────────────────────────────────
 numpy==1.24.4
 pandas==2.1.1
-scipy==1.15.3
+scipy==1.11.4
 h5py==3.10.0
 pillow==10.1.0
 
-# ML Utilities
+# ─── ML Utilities ───────────────────────────────────────────────────────────
 scikit-learn==1.3.2
 matplotlib==3.8.0
 
-# NLP & Semantic Search (OPTIONAL — code has keyword fallback)
- sentence-transformers==2.2.2  # Skip if import fails; keyword-matching still works
- transformers==4.35.2
+# ─── Semantic Interface (NLP) ───────────────────────────────────────────────
+# 2.7.0 is compatible with transformers 4.35.2 + huggingface-hub 0.36.x
+# (sentence-transformers 2.2.2 was incompatible with huggingface-hub >0.24)
+sentence-transformers==2.7.0
+transformers==4.35.2
 huggingface-hub==0.36.2
+tokenizers==0.15.2
+sentencepiece==0.2.0
 
-# Utilities
-pyyaml==6.0.3
+# ─── Dataset Downloads ──────────────────────────────────────────────────────
+dataretrieval==1.0.11
+
+# ─── Build tools (silences librosa/setuptools pkg_resources warning) ────────
+setuptools==80.9.0
+
+# ─── YAML (config reading) ───────────────────────────────────────────────────
+pyyaml==6.0.1
