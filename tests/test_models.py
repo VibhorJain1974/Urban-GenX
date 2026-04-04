@@ -1,13 +1,12 @@
 """
-Urban-GenX | tests/test_models.py
-Model forward-pass unit tests.
+Urban-GenX | tests/test_models.py (FINAL — all 4 modalities + water)
 Run: python tests/test_models.py
 """
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import torch
-import torch.nn.functional as F
+import numpy as np
 
 
 def test_acoustic_vae_forward():
@@ -20,7 +19,7 @@ def test_acoustic_vae_forward():
         loss = AcousticVAE.loss(recon, x, mu, lv, beta=1.0)
     assert recon.shape == x.shape, f"recon shape mismatch: {recon.shape}"
     assert mu.shape == (2, 64)
-    assert float(loss.item()) < 20.0, f"Loss too large (check reduction='mean'): {float(loss.item())}"
+    assert float(loss.item()) < 20.0, f"Loss too large: {float(loss.item())}"
     print("[PASS] test_acoustic_vae_forward")
 
 
@@ -50,7 +49,7 @@ def test_vision_discriminator_shape():
     G, D = Generator(), Discriminator()
     G.eval(); D.eval()
     cond = torch.zeros(2, 35, 64, 64)
-    img  = torch.randn(2, 3, 64, 64)
+    img = torch.randn(2, 3, 64, 64)
     with torch.no_grad():
         pred = D(cond, img)
     assert pred.dim() == 4 and pred.shape[1] == 1
@@ -64,19 +63,33 @@ def test_utility_vae_traffic():
     m.eval()
     with torch.no_grad():
         recon, mu, lv = m(x)
-        loss          = UtilityVAE.loss(recon, x, mu, lv, beta=1.0)
-        synth         = m.generate(n_samples=2)
+        loss = UtilityVAE.loss(recon, x, mu, lv, beta=1.0)
+        synth = m.generate(n_samples=2)
     assert recon.shape == x.shape
     assert synth.shape == (2, 12 * 207)
     print(f"[PASS] test_utility_vae_traffic | loss={float(loss.item()):.4f}")
 
 
+def test_utility_vae_water():
+    from models.utility_vae import build_water_vae, UtilityVAE
+    m = build_water_vae(seq_len=24, n_params=5, latent_dim=16)
+    x = torch.randn(4, 24 * 5)
+    m.eval()
+    with torch.no_grad():
+        recon, mu, lv = m(x)
+        loss = UtilityVAE.loss(recon, x, mu, lv, beta=1.0)
+        synth = m.generate(n_samples=2)
+    assert recon.shape == x.shape
+    assert synth.shape == (2, 24 * 5)
+    print(f"[PASS] test_utility_vae_water | loss={float(loss.item()):.4f}")
+
+
 def test_semantic_interface():
     from models.transformer_core import SemanticInterface
-    si = SemanticInterface()
+    si = SemanticInterface(use_sbert=False)  # keyword mode for fast test
     for query in ["construction site", "park", "highway", "busy intersection"]:
         preset = si.query(query)
-        cond   = si.build_condition_tensor(preset, img_size=64, num_classes=35, batch_size=1)
+        cond = si.build_condition_tensor(preset, img_size=64, num_classes=35, batch_size=1)
         assert "scene_name" in preset
         assert cond.shape == (1, 35, 64, 64), f"cond shape: {cond.shape}"
     print("[PASS] test_semantic_interface")
@@ -84,10 +97,42 @@ def test_semantic_interface():
 
 def test_semantic_list_scenes():
     from models.transformer_core import SemanticInterface
-    si     = SemanticInterface()
+    si = SemanticInterface(use_sbert=False)
     scenes = si.list_scenes()
     assert len(scenes) >= 6, f"Expected at least 6 presets, got {len(scenes)}"
     print(f"[PASS] test_semantic_list_scenes | {len(scenes)} presets: {scenes}")
+
+
+def test_water_quality_dataset_synthetic():
+    """Test WaterQualityDataset with synthetic CSV data."""
+    import tempfile
+    import pandas as pd
+    from src.utils.data_loader import WaterQualityDataset
+
+    # Create a small synthetic CSV
+    n_rows = 200
+    df = pd.DataFrame({
+        "datetime": pd.date_range("2020-01-01", periods=n_rows, freq="h"),
+        "dissolved_oxygen": np.random.normal(8.0, 1.5, n_rows),
+        "ph_value": np.random.normal(7.0, 0.5, n_rows),
+        "temperature_water": np.random.normal(15.0, 5.0, n_rows),
+        "turbidity_fnu": np.random.exponential(5.0, n_rows),
+        "streamflow_cfs": np.random.exponential(100.0, n_rows),
+    })
+
+    with tempfile.NamedTemporaryFile(mode='w', suffix='.csv', delete=False) as f:
+        df.to_csv(f.name, index=False)
+        tmp_path = f.name
+
+    try:
+        ds = WaterQualityDataset(csv_path=tmp_path, seq_len=24, n_params=5, stride=1)
+        assert len(ds) > 0, f"Dataset empty: {len(ds)}"
+        x, y = ds[0]
+        assert x.shape == (24, ds.actual_n_params), f"Shape: {x.shape}"
+        print(f"[PASS] test_water_quality_dataset | {len(ds)} samples, {ds.actual_n_params} params")
+    finally:
+        import os
+        os.unlink(tmp_path)
 
 
 if __name__ == "__main__":
@@ -96,6 +141,8 @@ if __name__ == "__main__":
     test_vision_generator_shape()
     test_vision_discriminator_shape()
     test_utility_vae_traffic()
+    test_utility_vae_water()
     test_semantic_interface()
     test_semantic_list_scenes()
-    print("\n[ALL TESTS PASSED]")
+    test_water_quality_dataset_synthetic()
+    print("\n[ALL TESTS PASSED] ✅")

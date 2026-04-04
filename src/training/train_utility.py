@@ -1,7 +1,11 @@
 """
-Urban-GenX | Utility Node Training
-Trains UtilityVAE on METR-LA traffic data (and optionally USGS water).
-With checkpointing, tqdm, ntfy.
+Urban-GenX | Utility Node Training (FINAL — Traffic + Water modes)
+==================================================================
+Trains UtilityVAE on:
+  - METR-LA traffic data (mode="traffic")
+  - USGS water quality data (mode="water")  ← NEW
+
+With checkpointing, tqdm, ntfy, beta-annealing, validation.
 """
 
 import os
@@ -14,7 +18,7 @@ from tqdm import tqdm
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 from models.utility_vae import build_traffic_vae, build_water_vae, UtilityVAE
-from src.utils.data_loader import METRLADataset
+from src.utils.data_loader import METRLADataset, WaterQualityDataset
 from src.utils.notifier import (
     notify_epoch,
     notify_crash_save,
@@ -24,14 +28,22 @@ from src.utils.notifier import (
 
 # ─── Config ───────────────────────────────────────────────────────────────────
 CFG = {
+    # Change to "water" to train water quality VAE
     "mode": "traffic",   # "traffic" | "water"
 
-    # METR-LA
+    # METR-LA (traffic mode)
     "traffic_h5":  "data/raw/metr-la/metr-la.h5",
     "seq_len":     12,
     "pred_len":    12,
     "n_sensors":   207,
 
+    # USGS Water (water mode)
+    "water_csv":   "data/raw/usgs_water/water_quality.csv",
+    "water_seq_len": 24,
+    "water_n_params": 5,
+    "water_stride": 1,
+
+    # Shared training config
     "checkpoint":  "checkpoints/utility_traffic_checkpoint.pth",
     "batch_size":  32,
     "num_workers": 0,
@@ -72,12 +84,11 @@ def load_checkpoint(path, model, opt):
 
 
 def train():
-    # ── Data ────────────────────────────────────────────────────────────────
+    # ── Data & Model ────────────────────────────────────────────────────────
     if CFG["mode"] == "traffic":
         print("[DATA] Loading METR-LA traffic dataset...")
         h5_path = CFG["traffic_h5"]
         if not os.path.exists(h5_path):
-            # Try common alternative paths
             for alt in [
                 "data/raw/metr-la/metr-la.h5",
                 "data/raw/metr-la/METR-LA.h5",
@@ -97,17 +108,56 @@ def train():
         full_dataset = METRLADataset(
             h5_path, seq_len=CFG["seq_len"], pred_len=CFG["pred_len"]
         )
-        input_dim = CFG["seq_len"] * CFG["n_sensors"]
         model = build_traffic_vae(
             seq_len=CFG["seq_len"],
             n_sensors=CFG["n_sensors"],
             latent_dim=CFG["latent_dim"],
         ).to(DEVICE)
 
-    else:
-        raise NotImplementedError(
-            "Water mode: ensure USGS CSV is at data/raw/usgs_water/water_quality.csv"
+        # Flatten function for traffic data
+        def flatten_fn(x):
+            return x.view(x.size(0), -1)
+
+    elif CFG["mode"] == "water":
+        print("[DATA] Loading USGS Water Quality dataset...")
+        csv_path = CFG["water_csv"]
+        if not os.path.exists(csv_path):
+            for alt in [
+                "data/raw/usgs_water/water_quality.csv",
+                "data/raw/usgs_water/wqp_water_quality.csv",
+            ]:
+                if os.path.exists(alt):
+                    csv_path = alt
+                    print(f"[DATA] Found water CSV at: {csv_path}")
+                    break
+            else:
+                raise FileNotFoundError(
+                    f"USGS water CSV not found at {CFG['water_csv']}.\n"
+                    "Download: python src/utils/download_water_data.py\n"
+                    "Or: python -c \"import dataretrieval.nwis as nwis; ...\""
+                )
+
+        full_dataset = WaterQualityDataset(
+            csv_path=csv_path,
+            seq_len=CFG["water_seq_len"],
+            n_params=CFG["water_n_params"],
+            stride=CFG["water_stride"],
         )
+
+        actual_n = full_dataset.actual_n_params
+        model = build_water_vae(
+            seq_len=CFG["water_seq_len"],
+            n_params=actual_n,
+            latent_dim=min(16, CFG["latent_dim"]),
+        ).to(DEVICE)
+
+        CFG["checkpoint"] = "checkpoints/utility_water_checkpoint.pth"
+
+        def flatten_fn(x):
+            return x.view(x.size(0), -1)
+
+    else:
+        raise ValueError(f"Unknown mode: {CFG['mode']}. Use 'traffic' or 'water'.")
 
     # Train/Val split
     val_size = max(1, int(len(full_dataset) * CFG["val_split"]))
@@ -131,6 +181,7 @@ def train():
     start_epoch = load_checkpoint(CFG["checkpoint"], model, optimizer)
 
     # ── Training Loop ───────────────────────────────────────────────────────
+    avg_loss = 0.0
     for epoch in range(start_epoch, CFG["num_epochs"]):
         model.train()
         beta = get_beta(epoch)
@@ -138,13 +189,12 @@ def train():
 
         pbar = tqdm(
             train_loader,
-            desc=f"Utility Epoch [{epoch+1}/{CFG['num_epochs']}] β={beta:.2f}",
+            desc=f"Utility[{CFG['mode']}] Epoch [{epoch+1}/{CFG['num_epochs']}] beta={beta:.2f}",
             unit="batch",
         )
 
         for x, _ in pbar:
-            # x: [B, seq_len, n_sensors] → flatten for VAE
-            x_flat = x.view(x.size(0), -1).to(DEVICE)
+            x_flat = flatten_fn(x).to(DEVICE)
             optimizer.zero_grad(set_to_none=True)
 
             recon, mu, lv = model(x_flat)
@@ -165,7 +215,7 @@ def train():
         val_loss = 0.0
         with torch.no_grad():
             for x, _ in val_loader:
-                x_flat = x.view(x.size(0), -1).to(DEVICE)
+                x_flat = flatten_fn(x).to(DEVICE)
                 recon, mu, lv = model(x_flat)
                 val_loss += UtilityVAE.loss(recon, x_flat, mu, lv, beta=1.0).item()
         avg_val = val_loss / max(1, len(val_loader))
@@ -188,12 +238,12 @@ def train():
             f"Train={avg_loss:.4f} | Val={avg_val:.4f} | Mode={CFG['mode']}"
         )
 
-        # Only notify if we actually trained (loop executed)
     if start_epoch < CFG["num_epochs"]:
         notify_training_complete(CFG["num_epochs"], avg_loss)
         print(f"[DONE] Utility training complete. Final loss: {avg_loss:.4f}")
     else:
-        print(f"[INFO] Training already complete at epoch {start_epoch}. No new training performed.")
+        print(f"[INFO] Training already complete at epoch {start_epoch}.")
+
 
 if __name__ == "__main__":
     try:

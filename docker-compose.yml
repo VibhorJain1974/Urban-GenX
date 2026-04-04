@@ -1,0 +1,35 @@
+# Urban-GenX | Docker Compose
+# Usage:
+#   docker-compose up --build        → Build + start dashboard
+#   docker-compose up                → Start (if already built)
+#   docker-compose run app python src/training/train_vision.py   → Run training
+#   docker-compose run app python src/federated/server.py        → Run FL
+#   docker-compose run app python src/utils/privacy_audit.py     → Run MIA audit
+
+version: "3.8"
+
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: urban-genx
+    ports:
+      - "8501:8501"
+    volumes:
+      # Mount data and checkpoints from host (persist across container restarts)
+      - ./data:/app/data
+      - ./checkpoints:/app/checkpoints
+      # Mount code for live development (optional)
+      - ./models:/app/models
+      - ./src:/app/src
+      - ./dashboard:/app/dashboard
+    environment:
+      - PYTHONUNBUFFERED=1
+      - STREAMLIT_SERVER_HEADLESS=true
+    deploy:
+      resources:
+        limits:
+          memory: 12G
+          cpus: "4"
+    restart: unless-stopped

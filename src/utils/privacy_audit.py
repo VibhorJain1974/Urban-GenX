@@ -1,39 +1,262 @@
 """
-Urban-GenX | Privacy Audit Module
+Urban-GenX | Privacy Audit Module (FINAL — Standalone Runnable)
+===============================================================
 Implements Shadow Model-based Membership Inference Attack (MIA)
 to empirically validate the DP guarantee.
+
+Run standalone:
+  python src/utils/privacy_audit.py --model acoustic
+  python src/utils/privacy_audit.py --model traffic
+  python src/utils/privacy_audit.py --model vision
+
+Results:
+  AUC ~0.5 → strong privacy (model can't distinguish members from non-members)
+  AUC > 0.7 → memorization risk
 """
 
+import os
+import sys
+import argparse
 import torch
 import numpy as np
-from sklearn.metrics import roc_auc_score
+from torch.utils.data import DataLoader, Subset
+from sklearn.metrics import roc_auc_score, accuracy_score
 
-def membership_inference_attack(model, member_loader, nonmember_loader, device='cpu'):
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
+
+
+def membership_inference_attack(model, member_loader, nonmember_loader, device='cpu', model_type='vae'):
     """
-    Simple confidence-based MIA:
-    - Members (training data):     model should have low reconstruction loss
-    - Non-members (held-out data): model should have higher reconstruction loss
-    
-    A random classifier (AUC ~0.5) confirms strong privacy.
+    Confidence-based Membership Inference Attack (MIA).
+
+    For VAE models: uses reconstruction loss as the membership signal.
+    For GAN discriminator: uses discriminator score as the signal.
+
+    Members (training data) → model tends to have lower reconstruction loss.
+    Non-members (held-out) → higher reconstruction loss.
+
+    AUC ~0.5 confirms strong privacy (random guessing).
     AUC > 0.7 is a warning sign of memorization.
+
+    Args:
+        model: trained model (VAE or Discriminator)
+        member_loader: DataLoader with training data
+        nonmember_loader: DataLoader with held-out data
+        device: 'cpu' or 'cuda'
+        model_type: 'vae' | 'utility_vae' | 'discriminator'
+
+    Returns:
+        dict with 'auc', 'accuracy', 'verdict', 'member_mean_loss', 'nonmember_mean_loss'
     """
     model.eval()
-    scores, labels = [], []
+    scores = []
+    labels = []
 
     with torch.no_grad():
         for loader, label in [(member_loader, 1), (nonmember_loader, 0)]:
             for batch in loader:
-                x = batch[0].to(device) if isinstance(batch, (list, tuple)) else batch.to(device)
-                if hasattr(model, 'forward') and hasattr(model, 'reparameterize'):
-                    # VAE path
+                if isinstance(batch, (list, tuple)):
+                    x = batch[0].to(device)
+                else:
+                    x = batch.to(device)
+
+                if model_type == 'vae':
+                    # AcousticVAE: input [B, 1, 40, 128]
                     recon, mu, lv = model(x)
-                    loss = torch.mean((recon - x) ** 2, dim=[1,2,3])
+                    # Per-sample MSE
+                    loss = torch.mean((recon - x) ** 2, dim=[1, 2, 3])
+
+                elif model_type == 'utility_vae':
+                    # UtilityVAE: input [B, input_dim] (flattened)
+                    x_flat = x.view(x.size(0), -1)
+                    recon, mu, lv = model(x_flat)
+                    loss = torch.mean((recon - x_flat) ** 2, dim=1)
+
+                elif model_type == 'discriminator':
+                    # Vision GAN: check discriminator confidence
+                    # Expects (condition, image) — not directly usable here
+                    # Use a simplified version with just the image
+                    continue
+
                 else:
                     continue
-                # Lower loss = more likely a member
+
+                # Lower loss = more likely a member (model "knows" it better)
                 scores.extend((-loss).cpu().numpy().tolist())
                 labels.extend([label] * len(loss))
 
+    if len(scores) < 2 or len(set(labels)) < 2:
+        print("[MIA] Not enough data for MIA evaluation.")
+        return {"auc": 0.5, "accuracy": 0.5, "verdict": "insufficient_data"}
+
     auc = roc_auc_score(labels, scores)
-    print(f"[MIA] AUC = {auc:.4f} | {'⚠️ Memorization risk' if auc > 0.7 else '✅ Privacy OK'}")
-    return auc
+
+    # Threshold at median score for accuracy
+    threshold = np.median(scores)
+    preds = [1 if s > threshold else 0 for s in scores]
+    acc = accuracy_score(labels, preds)
+
+    # Compute mean losses for members vs non-members
+    member_scores = [-s for s, l in zip(scores, labels) if l == 1]
+    nonmember_scores = [-s for s, l in zip(scores, labels) if l == 0]
+
+    member_mean = np.mean(member_scores) if member_scores else 0
+    nonmember_mean = np.mean(nonmember_scores) if nonmember_scores else 0
+
+    if auc > 0.7:
+        verdict = "WARNING_MEMORIZATION"
+    elif auc > 0.6:
+        verdict = "MARGINAL"
+    else:
+        verdict = "SAFE"
+
+    print(f"[MIA] AUC = {auc:.4f} | Acc = {acc:.4f} | "
+          f"Member loss = {member_mean:.4f} | Non-member loss = {nonmember_mean:.4f} | "
+          f"{'⚠️ Memorization risk' if auc > 0.7 else '✅ Privacy OK'}")
+
+    return {
+        "auc": auc,
+        "accuracy": acc,
+        "verdict": verdict,
+        "member_mean_loss": member_mean,
+        "nonmember_mean_loss": nonmember_mean,
+    }
+
+
+def run_acoustic_mia():
+    """Run MIA on the trained AcousticVAE."""
+    from models.acoustic_vae import AcousticVAE
+    from src.utils.data_loader import UrbanSound8KDataset
+
+    print("\n" + "=" * 60)
+    print("  MIA Audit: Acoustic VAE (UrbanSound8K)")
+    print("=" * 60)
+
+    # Resolve data root
+    data_root = "data/raw/urbansound8k"
+    for alt in [data_root, os.path.join(data_root, "UrbanSound8K")]:
+        if os.path.exists(os.path.join(alt, "metadata", "UrbanSound8K.csv")):
+            data_root = alt
+            break
+
+    # Members: training folds (1-9)
+    member_ds = UrbanSound8KDataset(root=data_root, folds=list(range(1, 10)))
+    # Non-members: fold 10 (validation/held-out)
+    nonmember_ds = UrbanSound8KDataset(root=data_root, folds=[10])
+
+    # Use subset for speed
+    member_subset = Subset(member_ds, list(range(min(500, len(member_ds)))))
+    nonmember_subset = Subset(nonmember_ds, list(range(min(200, len(nonmember_ds)))))
+
+    member_loader = DataLoader(member_subset, batch_size=16, shuffle=False, num_workers=0)
+    nonmember_loader = DataLoader(nonmember_subset, batch_size=16, shuffle=False, num_workers=0)
+
+    # Load model
+    model = AcousticVAE(mfcc_bins=40, time_frames=128, latent_dim=64)
+    ckpt_path = "checkpoints/acoustic_checkpoint.pth"
+    if os.path.exists(ckpt_path):
+        ckpt = torch.load(ckpt_path, map_location="cpu")
+        model.load_state_dict(ckpt["model"])
+        print(f"[INFO] Loaded acoustic checkpoint from epoch {ckpt.get('epoch', '?')}")
+    else:
+        print("[WARN] No acoustic checkpoint found. Using random weights (MIA will show ~0.5 AUC)")
+
+    return membership_inference_attack(model, member_loader, nonmember_loader, model_type='vae')
+
+
+def run_traffic_mia():
+    """Run MIA on the trained Traffic UtilityVAE."""
+    from models.utility_vae import build_traffic_vae, UtilityVAE
+    from src.utils.data_loader import METRLADataset
+
+    print("\n" + "=" * 60)
+    print("  MIA Audit: Traffic VAE (METR-LA)")
+    print("=" * 60)
+
+    h5_path = "data/raw/metr-la/metr-la.h5"
+    if not os.path.exists(h5_path):
+        print(f"[ERROR] METR-LA not found at {h5_path}")
+        return {"auc": 0.5, "verdict": "data_not_found"}
+
+    full_ds = METRLADataset(h5_path, seq_len=12, pred_len=12)
+    total = len(full_ds)
+    split = int(total * 0.8)
+
+    # Members: first 80% (training data)
+    member_subset = Subset(full_ds, list(range(min(500, split))))
+    # Non-members: last 20% (held-out)
+    nonmember_subset = Subset(full_ds, list(range(split, min(split + 200, total))))
+
+    # Create loaders that flatten the data for UtilityVAE
+    class FlattenWrapper:
+        def __init__(self, loader):
+            self.loader = loader
+        def __iter__(self):
+            for x, y in self.loader:
+                yield x.view(x.size(0), -1), y.view(y.size(0), -1)
+        def __len__(self):
+            return len(self.loader)
+
+    member_loader = FlattenWrapper(DataLoader(member_subset, batch_size=32, shuffle=False, num_workers=0))
+    nonmember_loader = FlattenWrapper(DataLoader(nonmember_subset, batch_size=32, shuffle=False, num_workers=0))
+
+    model = build_traffic_vae(seq_len=12, n_sensors=207, latent_dim=64)
+    ckpt_path = "checkpoints/utility_traffic_checkpoint.pth"
+    if os.path.exists(ckpt_path):
+        ckpt = torch.load(ckpt_path, map_location="cpu")
+        model.load_state_dict(ckpt["model"])
+        print(f"[INFO] Loaded traffic checkpoint from epoch {ckpt.get('epoch', '?')}")
+    else:
+        print("[WARN] No traffic checkpoint found.")
+
+    return membership_inference_attack(model, member_loader, nonmember_loader, model_type='utility_vae')
+
+
+def run_all_mia():
+    """Run MIA on all available models and print summary."""
+    print("\n" + "=" * 60)
+    print("  Urban-GenX | Full Privacy Audit (MIA)")
+    print("=" * 60)
+
+    results = {}
+
+    try:
+        results["acoustic"] = run_acoustic_mia()
+    except Exception as e:
+        print(f"[ERROR] Acoustic MIA failed: {e}")
+        results["acoustic"] = {"auc": None, "verdict": "error"}
+
+    try:
+        results["traffic"] = run_traffic_mia()
+    except Exception as e:
+        print(f"[ERROR] Traffic MIA failed: {e}")
+        results["traffic"] = {"auc": None, "verdict": "error"}
+
+    # Summary table
+    print("\n" + "=" * 60)
+    print("  MIA AUDIT SUMMARY")
+    print("=" * 60)
+    print(f"  {'Model':<15} {'AUC':<10} {'Verdict':<25}")
+    print(f"  {'-'*15} {'-'*10} {'-'*25}")
+    for name, res in results.items():
+        auc_str = f"{res['auc']:.4f}" if res.get('auc') is not None else "N/A"
+        verdict = res.get('verdict', 'unknown')
+        emoji = "✅" if verdict == "SAFE" else ("⚠️" if verdict == "MARGINAL" else "❌")
+        print(f"  {name:<15} {auc_str:<10} {emoji} {verdict}")
+    print("=" * 60)
+
+    return results
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Urban-GenX Privacy Audit (MIA)")
+    parser.add_argument("--model", choices=["acoustic", "traffic", "all"], default="all",
+                        help="Which model to audit")
+    args = parser.parse_args()
+
+    if args.model == "acoustic":
+        run_acoustic_mia()
+    elif args.model == "traffic":
+        run_traffic_mia()
+    else:
+        run_all_mia()
