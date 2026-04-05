@@ -103,7 +103,7 @@ def train():
     # ── Attach DP ───────────────────────────────────────────────────
     privacy_engine = None
     if CFG["dp_enabled"]:
-        privacy_engine = PrivacyEngine()
+        privacy_engine = PrivacyEngine(accountant="rdp")
         model, optimizer, train_loader = privacy_engine.make_private_with_epsilon(
             module=model,
             optimizer=optimizer,
@@ -122,6 +122,11 @@ def train():
             ckpt = torch.load(ckpt_path, map_location="cpu")
             model.load_state_dict(ckpt["model"])
             optimizer.load_state_dict(ckpt["opt"])
+            if privacy_engine and "privacy_engine_state" in ckpt:
+                try:
+                    privacy_engine.load_state_dict(ckpt["privacy_engine_state"])
+                except Exception as e:
+                    print(f"[WARN] Privacy state load failed: {e}. Continuing with fresh accountant.")
             start_epoch = int(ckpt.get("epoch", 0))
             print(f"[INFO] Resumed from epoch {start_epoch}")
         except Exception as e:
@@ -177,6 +182,14 @@ def train():
             "avg_loss": avg_loss,
             "avg_val": avg_val,
             "mode": mode,
+            "privacy": {
+                "enabled": CFG["dp_enabled"],
+                "epsilon": float(eps) if privacy_engine else None,
+                "delta": CFG["target_delta"],
+                "max_grad_norm": CFG["max_grad_norm"],
+                "target_epsilon": CFG["target_epsilon"],
+            },
+            "privacy_engine_state": privacy_engine.state_dict() if privacy_engine and hasattr(privacy_engine, "state_dict") else None,
         }
         os.makedirs(os.path.dirname(ckpt_path), exist_ok=True)
         torch.save(state, ckpt_path)

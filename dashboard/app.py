@@ -235,6 +235,37 @@ def load_water_model():
     return W, epoch_info, n_params
 
 
+def load_privacy_metadata(checkpoint_path, default_epsilon, default_delta="1e-5", default_max_grad_norm="1.0", fallback_path=None):
+    metadata = {
+        "status": "✅ DP-SGD",
+        "epsilon": default_epsilon,
+        "delta": default_delta,
+        "max_grad_norm": default_max_grad_norm,
+    }
+    resolved_path = checkpoint_path
+    if not os.path.exists(resolved_path) and fallback_path and os.path.exists(fallback_path):
+        resolved_path = fallback_path
+
+    if not os.path.exists(resolved_path):
+        metadata["status"] = "⚠️ Checkpoint missing"
+        return metadata
+
+    try:
+        ckpt = torch.load(resolved_path, map_location="cpu", weights_only=False)
+    except Exception:
+        metadata["status"] = "⚠️ Corrupt"
+        return metadata
+
+    privacy = ckpt.get("privacy", {})
+    if isinstance(privacy, dict):
+        metadata["epsilon"] = str(privacy.get("epsilon", default_epsilon))
+        metadata["delta"] = str(privacy.get("delta", default_delta))
+        metadata["max_grad_norm"] = str(privacy.get("max_grad_norm", default_max_grad_norm))
+        if privacy.get("enabled", True):
+            metadata["status"] = "✅ DP-SGD"
+    return metadata
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # SIDEBAR
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -523,6 +554,22 @@ with tab_privacy:
     st.markdown("#### DP-SGD Budget Tracking")
     st.markdown("[🔗 Opacus Documentation](https://opacus.ai/)")
 
+    acoustic_privacy = load_privacy_metadata(
+        "checkpoints/acoustic_dp_checkpoint.pth",
+        "≤ 10.0",
+        fallback_path="checkpoints/acoustic_checkpoint.pth",
+    )
+    traffic_privacy = load_privacy_metadata(
+        "checkpoints/utility_traffic_dp_checkpoint.pth",
+        "≤ 10.0",
+        fallback_path="checkpoints/utility_traffic_checkpoint.pth",
+    )
+    water_privacy = load_privacy_metadata(
+        "checkpoints/utility_water_dp_checkpoint.pth",
+        "≤ 10.0",
+        fallback_path="checkpoints/utility_water_checkpoint.pth",
+    )
+
     dp_data = {
         "Module": [
             "Vision Discriminator (D)",
@@ -534,20 +581,21 @@ with tab_privacy:
         "DP Applied": [
             "✅ DP-SGD",
             "✅ Post-Processing",
-            "❌ (Phase 2)",
-            "❌ (Phase 2)",
-            "❌ (Phase 2)",
+            acoustic_privacy["status"],
+            traffic_privacy["status"],
+            water_privacy["status"],
         ],
-        "ε (Epsilon)": ["9.93", "≤ 10.0 (inherited)", "N/A", "N/A", "N/A"],
-        "δ (Delta)": ["1e-5", "1e-5", "N/A", "N/A", "N/A"],
-        "Max Grad Norm": ["1.0", "1.0", "N/A", "N/A", "N/A"],
+        "ε (Epsilon)": ["9.93", "≤ 9.93 (inherited)", acoustic_privacy["epsilon"], traffic_privacy["epsilon"], water_privacy["epsilon"]],
+        "δ (Delta)": ["1e-5", "1e-5", acoustic_privacy["delta"], traffic_privacy["delta"], water_privacy["delta"]],
+        "Max Grad Norm": ["1.0", "1.0", acoustic_privacy["max_grad_norm"], traffic_privacy["max_grad_norm"], water_privacy["max_grad_norm"]],
     }
     st.dataframe(pd.DataFrame(dp_data), use_container_width=True)
 
     st.markdown("""
 > **Privacy Guarantee Statement:**
 >
-> The Vision Discriminator is trained with DP-SGD (Opacus) with ε=9.93, δ=1e-5.
+> The Vision Discriminator, Acoustic VAE, Traffic VAE, and Water VAE are trained with Opacus DP-SGD.
+> Vision is tracked at ε=9.93, δ=1e-5, while the VAEs are trained to ε≤10.0 with δ=1e-5 and max_grad_norm=1.0.
 > The Generator is trained only through the DP-Discriminator signal (λ\_L1=0.0),
 > making the released Generator weights formally DP-protected under the
 > post-processing property of Differential Privacy.

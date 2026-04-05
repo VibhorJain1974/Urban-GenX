@@ -4,8 +4,9 @@
 [![Python](https://img.shields.io/badge/Python-3.10-blue?logo=python)](https://python.org)
 [![PyTorch](https://img.shields.io/badge/PyTorch-2.1.0-orange?logo=pytorch)](https://pytorch.org)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+[![Differential Privacy](https://img.shields.io/badge/Differential%20Privacy-%CE%B5%20%E2%89%A4%2010.0-red)](https://opacus.ai)
+[![SDG 11](https://img.shields.io/badge/SDG-11%20Sustainable%20Cities%20%26%20Communities-2e7d32)](https://sdgs.un.org/goals/goal11)
 [![Federated Learning](https://img.shields.io/badge/FL-Flower%20FedAvg-purple)](https://flower.dev)
-[![Differential Privacy](https://img.shields.io/badge/DP-Opacus%20RDP-red)](https://opacus.ai)
 
 Urban-GenX bridges the **privacy–utility gap** in urban data science by combining:
 - 🔒 **Differential Privacy** (Opacus DP-SGD, ε ≤ 10.0, δ = 1e-5) on the Vision cGAN Discriminator
