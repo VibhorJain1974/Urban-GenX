@@ -432,45 +432,82 @@ PALETTE = ["#60a5fa", "#34d399", "#f472b6", "#fb923c", "#a78bfa",
 
 def enhance_vision_output(tensor_img: torch.Tensor, scene_type: str = "urban") -> np.ndarray:
     """
-    Post-process cGAN output to improve visual quality.
+    Strong post-processing pipeline for DP-GAN 64×64 outputs.
     
-    The raw DP-GAN output (lambda_l1=0) is intentionally noisy.
-    We apply research-appropriate post-processing:
-    1. Histogram equalization per channel
-    2. Bilateral-like smoothing to reduce high-freq noise
-    3. Scene-aware color grading
+    DP-GAN with lambda_l1=0 produces structured noise — the Generator learned
+    coarse scene structure but no pixel-perfect detail. This pipeline:
+    1. Denoises with multi-scale Gaussian (removes DP noise while keeping edges)
+    2. Upscales 4× with bicubic interpolation (64→256px — smooth, not blocky)
+    3. Applies guided-filter-like edge sharpening (structure from upscaled image)
+    4. Scene-aware colour grading (warm/cool/green tone per scene type)
+    5. Final contrast + saturation boost for visual clarity
+    All using PIL + scipy — no extra dependencies needed.
     """
-    img = tensor_img.permute(1, 2, 0).numpy().copy()  # [H, W, 3] in [0,1]
-    img = np.clip(img, 0, 1)
+    from PIL import Image, ImageFilter, ImageEnhance, ImageOps
 
-    # Per-channel histogram equalization
+    # Step 0: tensor → numpy float32 [H,W,3] in [0,1]
+    img = tensor_img.permute(1, 2, 0).float().numpy().copy()
+    img = np.clip(img, 0.0, 1.0)
+
+    # Step 1: Per-channel robust contrast stretch (clip extremes, stretch middle)
     for c in range(3):
-        channel = img[:, :, c]
-        # Stretch contrast
-        lo, hi = np.percentile(channel, [2, 98])
-        if hi > lo:
-            img[:, :, c] = np.clip((channel - lo) / (hi - lo), 0, 1)
+        lo, hi = np.percentile(img[:, :, c], [3, 97])
+        if hi > lo + 1e-6:
+            img[:, :, c] = np.clip((img[:, :, c] - lo) / (hi - lo), 0, 1)
 
-    # Gaussian smoothing to reduce DP noise artifacts
+    # Step 2: Multi-scale denoising
+    # Coarse pass (removes DP Gaussian noise artifacts)
+    denoised = img.copy()
     for c in range(3):
-        img[:, :, c] = ndimage.gaussian_filter(img[:, :, c], sigma=0.8)
+        coarse = ndimage.gaussian_filter(img[:, :, c], sigma=1.2)
+        fine   = ndimage.gaussian_filter(img[:, :, c], sigma=0.4)
+        # Weighted blend: keep fine details, remove coarse noise
+        denoised[:, :, c] = 0.35 * coarse + 0.65 * fine
 
-    # Scene-aware color grading
-    color_grades = {
-        "busy_intersection": ([1.0, 0.9, 0.85], "warm urban"),
-        "construction_site": ([0.9, 0.85, 0.8], "industrial"),
-        "residential_street": ([0.95, 1.0, 0.95], "green tint"),
-        "park_green_space": ([0.85, 1.0, 0.85], "green"),
-        "highway_freeway": ([0.8, 0.85, 1.0], "cool"),
-        "emergency_scene": ([1.0, 0.7, 0.7], "red tint"),
-        "industrial_zone": ([0.85, 0.85, 0.8], "muted"),
-        "commercial_district": ([1.0, 0.95, 0.8], "warm"),
+    # Step 3: Convert to PIL uint8 and upscale 4× (64→256)
+    pil_img = Image.fromarray((denoised * 255).astype(np.uint8), mode="RGB")
+    pil_up = pil_img.resize((256, 256), Image.BICUBIC)
+
+    # Step 4: Guided-filter-like sharpening — UnsharpMask on upscaled image
+    # radius=3 preserves macro structure, percent=80 adds crispness
+    pil_sharp = pil_up.filter(ImageFilter.UnsharpMask(radius=3, percent=80, threshold=2))
+
+    # Step 5: Mild smoothing pass after sharpening to remove ringing
+    pil_smooth = pil_sharp.filter(ImageFilter.GaussianBlur(radius=0.6))
+
+    # Step 6: Scene-aware colour grading via Pillow colour balance
+    # Each tuple = (R_scale, G_scale, B_scale, saturation_boost, brightness_boost)
+    scene_grades = {
+        "busy_intersection":   (1.08, 0.95, 0.88, 1.25, 1.05),   # warm amber urban
+        "construction_site":   (0.95, 0.90, 0.85, 1.10, 0.98),   # dusty industrial
+        "residential_street":  (0.95, 1.05, 0.92, 1.20, 1.08),   # fresh green
+        "park_green_space":    (0.85, 1.10, 0.80, 1.35, 1.12),   # vivid green park
+        "highway_freeway":     (0.88, 0.92, 1.12, 1.15, 1.02),   # cool blue highway
+        "emergency_scene":     (1.15, 0.80, 0.75, 1.30, 1.05),   # red alert
+        "industrial_zone":     (0.90, 0.88, 0.85, 0.95, 0.95),   # muted factory
+        "commercial_district": (1.10, 1.00, 0.82, 1.20, 1.06),   # warm golden
     }
-    grade = color_grades.get(scene_type, [1.0, 1.0, 1.0])
-    for c, g in enumerate(grade[0]):
-        img[:, :, c] = np.clip(img[:, :, c] * g, 0, 1)
+    rs, gs, bs, sat_boost, bri_boost = scene_grades.get(
+        scene_type, (1.0, 1.0, 1.0, 1.15, 1.05)
+    )
 
-    return (img * 255).astype(np.uint8)
+    # Apply per-channel multiply via numpy
+    arr = np.array(pil_smooth, dtype=np.float32) / 255.0
+    arr[:, :, 0] = np.clip(arr[:, :, 0] * rs, 0, 1)
+    arr[:, :, 1] = np.clip(arr[:, :, 1] * gs, 0, 1)
+    arr[:, :, 2] = np.clip(arr[:, :, 2] * bs, 0, 1)
+    pil_graded = Image.fromarray((arr * 255).astype(np.uint8), mode="RGB")
+
+    # Step 7: Saturation boost (makes colours pop despite DP noise)
+    pil_sat = ImageEnhance.Color(pil_graded).enhance(sat_boost)
+
+    # Step 8: Brightness nudge
+    pil_bri = ImageEnhance.Brightness(pil_sat).enhance(bri_boost)
+
+    # Step 9: Contrast boost — CLAHE-like local contrast
+    pil_final = ImageEnhance.Contrast(pil_bri).enhance(1.30)
+
+    return np.array(pil_final, dtype=np.uint8)
 
 
 def generate_mfcc_with_temperature(model, n_samples: int, seed: int,
@@ -878,30 +915,59 @@ with tab_v:
             synth_raw = G(cond)
             synth_norm = ((synth_raw + 1) / 2).clamp(0, 1)
 
-        # Render in research-grade figure
+        # ── Render: single enhanced row (256×256 each, clean display) ──────────
         n_show = min(n_samples, 4)
-        fig, axes = plt.subplots(2, n_show, figsize=(n_show * 3.2, 6.8))
-        fig.suptitle(
-            f"Synthetic Street Views  ·  Scene: {scene_type_key.replace('_',' ').title()}  ·  Epoch {g_epoch}  ·  ε = 9.93",
-            fontsize=10, color="#7dd3fc", y=1.01, fontfamily="monospace"
-        )
+        scene_label = scene_type_key.replace("_", " ").title()
 
+        # Build enhanced images list
+        enhanced_imgs = []
         for i in range(n_show):
-            # Raw output
-            raw_np = synth_norm[i].permute(1, 2, 0).numpy()
-            axes[0, i].imshow(raw_np, interpolation="nearest")
-            axes[0, i].set_title(f"Raw Output #{i+1}", fontsize=8, color="#64748b")
-            axes[0, i].axis("off")
+            enh = enhance_vision_output(synth_norm[i], scene_type=scene_type_key)
+            enhanced_imgs.append(enh)
 
-            # Enhanced output
-            enhanced = enhance_vision_output(synth_norm[i], scene_type=scene_type_key)
-            axes[1, i].imshow(enhanced, interpolation="bicubic")
-            axes[1, i].set_title(f"Enhanced #{i+1}", fontsize=8, color="#34d399")
-            axes[1, i].axis("off")
+        # ── Single-row figure: large, clean, no axes clutter ────────────────
+        fig, axes = plt.subplots(1, n_show, figsize=(n_show * 3.6, 4.2))
+        if n_show == 1:
+            axes = [axes]
+        fig.patch.set_facecolor("#050810")
+        fig.suptitle(
+            f"Synthetic Street Views  ·  Scene: {scene_label}  ·  "
+            f"Epoch {g_epoch}  ·  ε=9.93 (DP-SGD)  ·  256×256",
+            fontsize=9, color="#7dd3fc", fontfamily="monospace", y=1.01,
+        )
+        for i, ax in enumerate(axes):
+            ax.imshow(enhanced_imgs[i], interpolation="lanczos")
+            ax.set_title(f"Scene {i+1}", fontsize=8.5, color="#34d399",
+                         fontfamily="monospace", pad=4)
+            ax.axis("off")
+            # Thin glow border
+            for spine in ax.spines.values():
+                spine.set_edgecolor("#1e3a5f")
+                spine.set_linewidth(0.8)
+                spine.set_visible(True)
 
-        plt.tight_layout(pad=0.5)
-        st.pyplot(fig)
+        plt.tight_layout(pad=0.4)
+        st.pyplot(fig, use_container_width=True)
         plt.close()
+
+        # ── Side-by-side raw comparison in expander (research transparency) ─
+        with st.expander("🔬 Raw DP-GAN Output (64×64, no post-processing)", expanded=False):
+            fig_raw, axes_raw = plt.subplots(1, n_show, figsize=(n_show * 2.2, 2.5))
+            if n_show == 1:
+                axes_raw = [axes_raw]
+            fig_raw.patch.set_facecolor("#050810")
+            fig_raw.suptitle(
+                "Raw Generator Output — DP noise visible (λ_L1=0, ε=9.93)",
+                fontsize=8, color="#64748b", fontfamily="monospace",
+            )
+            for i, ax in enumerate(axes_raw):
+                raw_np = synth_norm[i].permute(1, 2, 0).numpy()
+                ax.imshow(raw_np, interpolation="nearest")
+                ax.set_title(f"Raw #{i+1}", fontsize=7, color="#64748b")
+                ax.axis("off")
+            plt.tight_layout(pad=0.3)
+            st.pyplot(fig_raw, use_container_width=True)
+            plt.close()
 
         st.markdown(f"""
         <div style="background:linear-gradient(135deg,#071a10,#040e09);
@@ -1327,7 +1393,6 @@ with tab_p:
                     linestyle="--", alpha=0.7, label="Random (AUC=0.5)")
 
         # Acoustic
-        acoustic_curve = theta * 0.88 + np.random.seed(42) or 0
         np.random.seed(42)
         acoustic_y = np.sort(np.random.beta(1.1, 1.3, 200))[::-1]
         acoustic_auc = np.trapz(acoustic_y, dx=1/200)
@@ -1357,7 +1422,6 @@ with tab_p:
     st.markdown("#### ε Budget Progression (Vision Training)")
     epochs_vis = np.arange(1, 51)
     eps_progression = 4.0 + (epochs_vis / 50) ** 0.7 * 5.93
-    eps_noise = np.random.seed(7) or np.random.normal(0, 0.04, 50)
     np.random.seed(7)
     eps_noise2 = np.random.normal(0, 0.04, 50)
     eps_actual = eps_progression + eps_noise2
