@@ -723,6 +723,110 @@ with st.sidebar:
             </div>
             """, unsafe_allow_html=True)
 
+    # ═══════════════════════════════════════════════════════
+    # 📄  FULL-REPORT PDF EXPORT (all tabs → one PDF)
+    # ═══════════════════════════════════════════════════════
+    st.markdown('<hr style="border-color:#1e2d4a; margin:16px 0;">', unsafe_allow_html=True)
+    st.markdown("""
+    <div style="font-size:0.72rem; font-weight:600; letter-spacing:0.12em;
+                text-transform:uppercase; color:#4b6080; margin-bottom:10px;
+                font-family:'JetBrains Mono',monospace;">
+        📄 EXPORT · FULL REPORT
+    </div>
+    <div style="font-size:0.72rem; color:#64748b; line-height:1.55;
+                margin-bottom:10px;">
+        Generates a single PDF containing the results of <b>all six tabs</b>
+        (Vision · Acoustic · Traffic · Water · Privacy · SDG-11) under the
+        <b>current policy-simulation settings</b>.
+        Filename encodes the inputs so two PDFs can be compared side-by-side.
+    </div>
+    """, unsafe_allow_html=True)
+
+    if st.button("📄  Generate Full-Report PDF", key="btn_full_pdf",
+                 use_container_width=True):
+        from dashboard.pdf_report import build_full_report_pdf, make_run_id
+        from datetime import datetime, timezone
+
+        with st.spinner("Running all models and building PDF (≈20-40 s on CPU)…"):
+            # ---- Load every model once ----
+            G_m, g_ep, _       = load_vision_model()
+            V_m, v_ep, _       = load_acoustic_model()
+            T_m, t_ep          = load_traffic_model()
+            W_m, w_ep, w_np, w_sl = load_water_model()
+
+            # ---- Resolve acoustic class (match tab_a logic) ----
+            _acoustic_class_names = [
+                "air_conditioner", "car_horn", "children_playing",
+                "dog_bark", "drilling", "engine_idling",
+                "gun_shot", "jackhammer", "siren", "street_music",
+            ]
+            _scene_preset = globals().get("scene_preset", None)
+            if _scene_preset:
+                _default_cls = _scene_preset.get("acoustic_class", 5)
+            else:
+                _default_cls = 5
+            _acoustic_cls_id = _default_cls
+            _acoustic_cls_name = _acoustic_class_names[_acoustic_cls_id]
+            
+            # ---- Safe access to module-level variables ----
+            _query = globals().get("query", "")
+            _si = globals().get("si", load_semantic_interface())
+
+            # ---- Build context ----
+            run_id = make_run_id(noise_level, traffic_density, green_space,
+                                 time_of_day, noise_seed, n_samples)
+            ctx = dict(
+                # Meta
+                timestamp=datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"),
+                run_id=run_id,
+                # Policy
+                noise_level=noise_level,
+                traffic_density=traffic_density,
+                green_space=green_space,
+                time_of_day=time_of_day,
+                noise_seed=noise_seed,
+                n_samples=n_samples,
+                # Scene query
+                query=_query or "—",
+                scene_name=(_scene_preset["scene_name"].replace("_"," ").title()
+                            if _scene_preset else "—"),
+                scene_name_key=(_scene_preset["scene_name"] if _scene_preset
+                                else "busy_intersection"),
+                scene_preset=_scene_preset,
+                semantic_interface=_si,
+                # Models
+                vision_model=G_m,    vision_epoch=g_ep,
+                acoustic_model=V_m,  acoustic_epoch=v_ep,
+                traffic_model=T_m,   traffic_epoch=t_ep,
+                water_model=W_m,     water_epoch=w_ep,
+                water_n_params=w_np, water_seq_len=w_sl,
+                # Acoustic settings (use sensible defaults = what tab_a uses)
+                acoustic_class=_acoustic_cls_name,
+                acoustic_class_id=_acoustic_cls_id,
+                acoustic_temp=0.35,
+                # Helpers (so pdf_report doesn't re-import app.py)
+                enhance_vision_output=enhance_vision_output,
+                generate_mfcc_with_temperature=generate_mfcc_with_temperature,
+            )
+
+            pdf_bytes = build_full_report_pdf(ctx)
+            st.session_state["full_pdf_bytes"] = pdf_bytes
+            st.session_state["full_pdf_name"]  = f"UrbanGenX_FullReport_{run_id}.pdf"
+
+        st.success("✓ PDF ready — click the download button below.")
+
+    # Persistent download button (only shown once a PDF is in session_state)
+    if st.session_state.get("full_pdf_bytes"):
+        st.download_button(
+            label="⬇  Download Full-Report PDF",
+            data=st.session_state["full_pdf_bytes"],
+            file_name=st.session_state["full_pdf_name"],
+            mime="application/pdf",
+            key="dl_full_pdf",
+            use_container_width=True,
+        )
+        st.caption(f"📎 `{st.session_state['full_pdf_name']}`")
+
     st.markdown('<hr style="border-color:#1e2d4a; margin:16px 0;">', unsafe_allow_html=True)
     st.markdown("""
     <div style="font-size:0.72rem; color:#4b6080; text-align:center;
@@ -1327,8 +1431,8 @@ with tab_p:
                     linestyle="--", alpha=0.7, label="Random (AUC=0.5)")
 
         # Acoustic
-        acoustic_curve = theta * 0.88 + np.random.seed(42) or 0
         np.random.seed(42)
+        acoustic_curve = theta * 0.88
         acoustic_y = np.sort(np.random.beta(1.1, 1.3, 200))[::-1]
         acoustic_auc = np.trapz(acoustic_y, dx=1/200)
         ax_mia.plot(theta, acoustic_y / acoustic_y.max() * 0.9, color=PALETTE[0],
