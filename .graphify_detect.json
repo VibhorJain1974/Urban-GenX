@@ -3,6 +3,7 @@
     "code": [
       "fl_debug_plan.py",
       "RESET_AND_REINSTALL.ps1",
+      "run_graphify.py",
       "dashboard\\app.py",
       "models\\acoustic_vae.py",
       "models\\transformer_core.py",
@@ -35,15 +36,26 @@
     ],
     "document": [
       "CHANGELOG.md",
+      "privacy_audit_results.txt",
       "PROJECT_REPORT.txt",
       "README.md",
       "requirements.txt",
       "TRAINING_LOG_ACOUSTIC.txt",
       "TRAINING_LOG_TRAFFIC.txt",
-      "TRAINING_LOG_VISION.txt"
+      "TRAINING_LOG_VISION.txt",
+      "graphify-out\\graph.html",
+      "graphify-out\\GRAPH_REPORT.md"
     ],
     "paper": [],
     "image": [
+      "checkpoints\\samples\\p1_epoch005.png",
+      "checkpoints\\samples\\p1_epoch010.png",
+      "checkpoints\\samples\\p1_epoch015.png",
+      "checkpoints\\samples\\p1_epoch020.png",
+      "checkpoints\\samples\\p1_epoch025.png",
+      "checkpoints\\samples\\p1_epoch030.png",
+      "checkpoints\\samples\\p1_epoch035.png",
+      "checkpoints\\samples\\p1_epoch040.png",
       "data\\raw\\cityscapes\\gtFine\\test\\berlin\\berlin_000000_000019_gtFine_color.png",
       "data\\raw\\cityscapes\\gtFine\\test\\berlin\\berlin_000000_000019_gtFine_instanceIds.png",
       "data\\raw\\cityscapes\\gtFine\\test\\berlin\\berlin_000000_000019_gtFine_labelIds.png",
@@ -37512,10 +37524,10 @@
       "data\\raw\\urbansound8k\\fold9\\99500-2-0-50.wav"
     ]
   },
-  "total_files": 37502,
-  "total_words": 414004306,
+  "total_files": 37514,
+  "total_words": 414039803,
   "needs_graph": true,
-  "warning": "Large corpus: 37502 files \u00b7 ~414,004,306 words. Semantic extraction will be expensive (many Claude tokens). Consider running on a subfolder, or use --no-semantic to run AST-only.",
+  "warning": "Large corpus: 37514 files \u00b7 ~414,039,803 words. Semantic extraction will be expensive (many Claude tokens). Consider running on a subfolder, or use --no-semantic to run AST-only.",
   "skipped_sensitive": [],
   "graphifyignore_patterns": 0
 }
