@@ -40,7 +40,6 @@ kaggle.json
 # Output and cache directories
 .graphify-cache/
 analysis-output/
-logs/
 dev/
 
 # Training logs (optional — remove this line if you want to track them)
