@@ -702,7 +702,18 @@ with tab_a:
         st.markdown("**Latent Space Statistics**")
         fig3,ax3 = plt.subplots(figsize=(6,3.5))
         with torch.no_grad():
-            mu_vals = V.fc_mu(V.encoder(torch.randn(200,1,40,128).view(200,-1)))
+            with torch.no_grad():
+                sample_input = torch.randn(200, 1, 40, 128).view(200, -1)
+                if hasattr(V, 'encoder'):
+                    h = V.encoder(sample_input)
+                elif hasattr(V, 'enc'):
+                    h = V.enc(sample_input)
+                else:
+                    # fallback: run full forward and grab mu directly
+                    _, mu_vals, _ = V(torch.randn(200, 1, 40, 128))
+                    h = None
+                if h is not None:
+                    mu_vals = V.fc_mu(h)
         mu_np = mu_vals.numpy()
         ax3.scatter(mu_np[:,0], mu_np[:,1], alpha=0.4, s=8, c=np.arange(200), cmap="cool")
         ax3.set_xlabel("z[0]"); ax3.set_ylabel("z[1]")

@@ -13,40 +13,47 @@ Validation Samples: 837 clips
 Batches per Epoch: 494
 Feature Type: MFCC (Mel-frequency cepstral coefficients)
 
-[TRAINING PROGRESSION - EXTENDED EPOCHS]
-Epoch | Beta | Train Loss | Val Loss   | Recon Loss | KL Loss | Status
---------------------------------------------------------------------------
-01/100| 0.00 | 0.6688     | 2.5137     | 0.6688     | 0.0000  | PASS
-02/100| 0.05 | 0.6752     | 0.7154     | 0.6640     | 0.0112  | PASS
-05/100| 0.20 | 0.6724     | 0.6770     | 0.6671     | 0.0053  | PASS
-10/100| 0.45 | 0.6731     | 0.6705     | 0.6701     | 0.0031  | PASS
-16/100| 0.70 | 0.6723     | 0.6703     | 0.6700     | 0.0023  | RESUMED
-21/100| 0.90 | 0.6720     | 0.6693     | 0.6696     | 0.0024  | PASS
-32/100| 1.00 | 0.6714     | 0.6693     | 0.6691     | 0.0023  | PASS
-36/100| 1.00 | 0.6713     | 0.6692     | 0.6690     | 0.0022  | PASS
-47/100| 1.00 | 0.6715     | 0.6692     | 0.6692     | 0.0023  | PASS
-50/100| 1.00 | 0.6713     | 0.6696     | 0.6691     | 0.0023  | CHECKPOINT
-65/100| 1.00 | 0.6709     | 0.6690     | 0.6688     | 0.0021  | PASS
-75/100| 1.00 | 0.6707     | 0.6688     | 0.6685     | 0.0022  | PASS
-85/100| 1.00 | 0.6706     | 0.6687     | 0.6684     | 0.0022  | PASS
-100/100|1.00 | 0.6703     | 0.6685     | 0.6682     | 0.0021  | COMPLETED ✅
+[RECENT TERMINAL RUN UPDATE]
+Date: April 21, 2026
+Configuration: Mel-Spectrogram | Conditional VAE | Bins: 64 | Free bits: 0.5
+Resume Point: Epoch 38 (from checkpoint)
 
-[FINAL PERFORMANCE]
+[TRAINING PROGRESSION - RECENT EPOCHS]
+Epoch | Beta | Train Loss | Val Loss | Recon Loss | KL Loss | Status
+------------------------------------------------------------------------
+39/60 | 1.00 | 0.6983     | 0.7959   | 0.1947     | 0.4159  | BEST
+40/60 | 1.00 | 0.6979     | 0.7987   | 0.1943     | 0.4166  | PASS
+41/60 | 1.00 | 0.6974     | 0.7996   | 0.1939     | 0.4158  | PASS
+42/60 | 1.00 | 0.6972     | 0.7991   | 0.1937     | 0.4161  | PASS
+43/60 | 1.00 | 0.6966     | 0.7956   | 0.1932     | 0.4166  | BEST
+44/60 | 1.00 | 0.6961     | 0.8017   | 0.1927     | 0.4170  | PASS
+45/60 | 1.00 | 0.6958     | 0.7949   | 0.1924     | 0.4176  | BEST
+46/60 | 1.00 | 0.6959     | 0.7938   | 0.1924     | 0.4178  | BEST
+47/60 | 1.00 | 0.6955     | 0.7971   | 0.1921     | 0.4181  | PASS
+48/60 | 1.00 | 0.6953     | 0.8004   | 0.1919     | 0.4183  | PASS
+49/60 | 1.00 | 0.6948     | 0.7979   | 0.1914     | 0.4195  | PASS
+50/60 | 1.00 | 0.6950     | 0.8016   | 0.1917     | 0.4180  | PASS
+51/60 | 1.00 | 0.6942     | 0.7930   | 0.1909     | 0.4192  | BEST
+52/60 | 1.00 | 0.6941     | 0.7962   | 0.1908     | 0.4196  | PASS
+53/60 | 1.00 | 0.6940     | 0.7961   | 0.1907     | 0.4208  | PASS
+54/60 | 1.00 | 0.6939     | 0.8016   | 0.1905     | 0.4200  | PASS
+55/60 | 1.00 | 0.6936     | 0.8027   | 0.1903     | 0.4202  | PASS
+56/60 | 1.00 | 0.6937     | 0.7989   | 0.1903     | 0.4203  | PASS
+57/60 | 1.00 | 0.6937     | 0.7988   | 0.1903     | 0.4215  | PASS
+58/60 | 1.00 | 0.6935     | 0.7954   | 0.1902     | 0.4206  | PASS
+59/60 | 1.00 | 0.6931     | 0.7982   | 0.1897     | 0.4213  | PASS
+60/60 | 1.00 | 0.6930     | 0.7977   | 0.1898     | 0.4212  | COMPLETED
+
+[FINAL PERFORMANCE - RECENT RUN]
 Status: SUCCESS
-Final Reconstruction Loss: 0.6682
-Final KL Divergence: 0.0021
-Best Validation Loss: 0.6685
+Best Validation Loss: 0.7930
+Final Validation Loss (Epoch 60): 0.7977
+Final Reconstruction Loss (Epoch 60): 0.1898
+Final KL Divergence (Epoch 60): 0.4212
 Checkpoint Saved: checkpoints/acoustic_best.pth
-Training Duration: 2h 47m
 
-[INCREMENTAL IMPROVEMENTS - Extended Training]
-- Epoch 50→100: Achieved 0.11% further reduction in reconstruction loss
-- Validation stability maintained across all 100 epochs
-- No overfitting detected
-
-[NOTES FOR SUBMISSION]
-- Beta (KL Annealing): Successfully scaled from 0.00 to 1.00 to balance reconstruction and latent regularization.
-- Recovery: Script successfully resumed from Epoch 16 after KeyboardInterrupt, preserving progress.
-- Extended Training: Extended to 100 epochs showed marginal improvements in generalization.
-- Optimization: Librosa audio loading optimized for HP Victus CPU.
+[NOTES - RECENT RUN]
+- Training resumed from checkpoint and completed through epoch 60.
+- Best validation was achieved at epoch 51 (0.7930).
+- Early stopping counter reached 9/15 by epoch 60; training ended at configured max epochs.
 ====================================================================

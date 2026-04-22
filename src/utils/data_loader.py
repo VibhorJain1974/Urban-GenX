@@ -1,9 +1,18 @@
 """
-Urban-GenX | Data Loaders (FINAL — all 4 modalities)
-Handles: Cityscapes (PIL→Tensor fix), UrbanSound8K (MFCC), METR-LA, USGS Water
-Critical: All Cityscapes images resized to 64x64 for 12GB RAM safety.
+Urban-GenX | Data Loaders — FIXED (Mel-spectrogram support added)
+=================================================================
+CHANGE vs original:
+  UrbanSound8KDataset now accepts:
+    - use_mel=True/False flag
+    - n_mels parameter (number of Mel bins)
+  
+  When use_mel=True:
+    - Uses librosa.feature.melspectrogram instead of mfcc
+    - Converts to log scale (log1p) for better dynamic range
+    - Returns [B, 1, n_mels, time_frames] — same shape contract as before
+    - n_mels=64 recommended (vs 40 MFCC bins) for richer features
 
-NEW: WaterQualityDataset for USGS water quality CSV files.
+  All other datasets (Cityscapes, METR-LA, WaterQuality) unchanged.
 """
 
 import os
@@ -33,14 +42,13 @@ class CityscapesDataset(Dataset):
 
         self.img_transform = T.Compose([
             T.Resize((img_size, img_size), interpolation=T.InterpolationMode.BILINEAR),
-            T.ToTensor(),                          # [0,1]
-            T.Normalize([0.5]*3, [0.5]*3)          # → [-1, 1]
+            T.ToTensor(),
+            T.Normalize([0.5]*3, [0.5]*3)
         ])
         self.lbl_transform = T.Compose([
             T.Resize((img_size, img_size), interpolation=T.InterpolationMode.NEAREST),
         ])
 
-        # Collect all image paths
         self.samples = []
         for city in os.listdir(self.img_dir):
             img_city = os.path.join(self.img_dir, city)
@@ -64,42 +72,70 @@ class CityscapesDataset(Dataset):
 
     def __getitem__(self, idx):
         img_path, lbl_path = self.samples[idx]
-
-        # Critical PIL fix: always convert to RGB (avoids RGBA/P mode errors)
         img = Image.open(img_path).convert('RGB')
         lbl = Image.open(lbl_path)
-
         img_t = self.img_transform(img)
-
-        # Label → one-hot condition tensor
         lbl_r = self.lbl_transform(lbl)
         lbl_np = np.array(lbl_r, dtype=np.int64)
         lbl_np = np.clip(lbl_np, 0, self.NUM_CLASSES - 1)
         lbl_t  = torch.from_numpy(lbl_np)
         cond = torch.zeros(self.NUM_CLASSES, self.img_size, self.img_size)
         cond.scatter_(0, lbl_t.unsqueeze(0), 1.0)
-
         return img_t, cond
 
 
 # ─── Acoustic Dataset ─────────────────────────────────────────────────────────
 class UrbanSound8KDataset(Dataset):
     """
-    Loads UrbanSound8K audio files and converts to MFCC spectrograms.
-    Pads/truncates to fixed time_frames for batch consistency.
+    Loads UrbanSound8K audio and converts to MFCC or Mel-spectrogram.
+
+    FIXED: Added use_mel flag and n_mels parameter.
+    
+    Args:
+        root        : path to UrbanSound8K (must contain metadata/ and audio/)
+        folds       : list of fold numbers to include (e.g. [1..9] for train)
+        n_mfcc      : MFCC bins (used when use_mel=False)
+        n_mels      : Mel filter banks (used when use_mel=True) — default 64
+        use_mel     : if True, use Mel-spectrogram instead of MFCC
+        time_frames : fixed time axis (padded/truncated to this)
+        sr          : sample rate (22050 Hz standard)
+
+    Returns per item:
+        tensor : [1, n_bins, time_frames]  (n_bins = n_mfcc or n_mels)
+        label  : int class ID (0–9)
     """
-    def __init__(self, root, folds=None, n_mfcc=40, time_frames=128, sr=22050):
+
+    def __init__(
+        self,
+        root,
+        folds=None,
+        n_mfcc=40,
+        n_mels=64,          # NEW: Mel bins
+        use_mel=True,       # NEW: use Mel-spectrogram (recommended)
+        time_frames=128,
+        sr=22050,
+    ):
         self.root        = root
         self.folds       = folds or list(range(1, 11))
         self.n_mfcc      = n_mfcc
+        self.n_mels      = n_mels
+        self.use_mel     = use_mel
         self.time_frames = time_frames
         self.sr          = sr
+
+        # Number of output frequency bins
+        self.n_bins = n_mels if use_mel else n_mfcc
+
+        mode = "Mel-spectrogram" if use_mel else "MFCC"
+        print(f"[Dataset] Mode: {mode} | Bins: {self.n_bins} | Time frames: {time_frames}")
 
         self.samples = []
         meta = pd.read_csv(os.path.join(root, 'metadata', 'UrbanSound8K.csv'))
         for _, row in meta.iterrows():
             if row['fold'] in self.folds:
-                fp = os.path.join(root, 'audio', f"fold{row['fold']}", row['slice_file_name'])
+                fp = os.path.join(
+                    root, 'audio', f"fold{row['fold']}", row['slice_file_name']
+                )
                 if os.path.exists(fp):
                     self.samples.append((fp, int(row['classID'])))
 
@@ -108,30 +144,57 @@ class UrbanSound8KDataset(Dataset):
 
     def __getitem__(self, idx):
         path, label = self.samples[idx]
+
         try:
             y, _ = librosa.load(path, sr=self.sr, mono=True)
             if len(y) < 1024:
                 y = np.pad(y, (0, 1024 - len(y)))
-            mfcc = librosa.feature.mfcc(
-                y=y,
-                sr=self.sr,
-                n_mfcc=self.n_mfcc,
-                n_fft=1024,
-                hop_length=512,
-            )
+
+            if self.use_mel:
+                # ── Mel-spectrogram (FIX 1 — richer than MFCC) ──────────────
+                mel = librosa.feature.melspectrogram(
+                    y=y,
+                    sr=self.sr,
+                    n_mels=self.n_mels,
+                    n_fft=1024,
+                    hop_length=512,
+                    fmax=8000,      # limit to 8kHz (most urban sounds)
+                )
+                # Log scale: compresses dynamic range, makes patterns clearer
+                features = librosa.power_to_db(mel, ref=np.max)
+            else:
+                # ── Original MFCC (kept for backwards compatibility) ──────────
+                features = librosa.feature.mfcc(
+                    y=y,
+                    sr=self.sr,
+                    n_mfcc=self.n_mfcc,
+                    n_fft=1024,
+                    hop_length=512,
+                )
+
         except Exception:
-            mfcc = np.zeros((self.n_mfcc, self.time_frames), dtype=np.float32)
+            # Return zeros on corrupt/unreadable file
+            features = np.zeros((self.n_bins, self.time_frames), dtype=np.float32)
 
-        if mfcc.shape[1] < self.time_frames:
-            mfcc = np.pad(mfcc, ((0, 0), (0, self.time_frames - mfcc.shape[1])))
+        # ── Pad / truncate to fixed time_frames ──────────────────────────────
+        if features.shape[1] < self.time_frames:
+            features = np.pad(
+                features,
+                ((0, 0), (0, self.time_frames - features.shape[1]))
+            )
         else:
-            mfcc = mfcc[:, :self.time_frames]
+            features = features[:, :self.time_frames]
 
-        mfcc = (mfcc - mfcc.mean()) / (mfcc.std() + 1e-8)
-        return torch.tensor(mfcc, dtype=torch.float32).unsqueeze(0), label
+        # ── Normalize to zero mean, unit std ─────────────────────────────────
+        features = (features - features.mean()) / (features.std() + 1e-8)
+
+        return (
+            torch.tensor(features, dtype=torch.float32).unsqueeze(0),  # [1, bins, T]
+            label
+        )
 
 
-# ─── Traffic Dataset (METR-LA) ────────────────────────────────────────────────
+# ─── Traffic Dataset (METR-LA) — UNCHANGED ───────────────────────────────────
 class METRLADataset(Dataset):
     """
     Loads METR-LA traffic speed data from HDF5.
@@ -156,30 +219,11 @@ class METRLADataset(Dataset):
         return x, y
 
 
-# ─── Water Quality Dataset (USGS) ─────────────────────────────────────────────
+# ─── Water Quality Dataset (USGS) — UNCHANGED ────────────────────────────────
 class WaterQualityDataset(Dataset):
     """
-    Loads USGS water quality CSV and creates sliding-window sequences
-    for VAE training/generation.
-
-    Expects CSV with columns that can include any of:
-      - Dissolved Oxygen (DO)
-      - pH
-      - Temperature
-      - Turbidity
-      - Streamflow
-    
-    The loader auto-detects numeric columns and uses up to n_params of them.
-    Missing values are forward-filled, then back-filled, then zero-filled.
-
-    Args:
-        csv_path:    Path to water quality CSV file
-        seq_len:     Number of time steps per sample window
-        n_params:    Number of water parameters to use (auto-selected from available)
-        stride:      Stride for sliding window (default 1)
+    Loads USGS water quality CSV and creates sliding-window sequences.
     """
-
-    # Common USGS parameter column patterns (for auto-detection)
     PARAM_PATTERNS = [
         "oxygen", "do", "00300",
         "ph", "00400",
@@ -190,25 +234,15 @@ class WaterQualityDataset(Dataset):
         "nitro", "00631",
     ]
 
-    def __init__(
-        self,
-        csv_path: str,
-        seq_len: int = 24,
-        n_params: int = 5,
-        stride: int = 1,
-    ):
+    def __init__(self, csv_path, seq_len=24, n_params=5, stride=1):
         self.seq_len  = seq_len
         self.n_params = n_params
         self.stride   = stride
 
-        # Load CSV
         df = pd.read_csv(csv_path, low_memory=False)
         print(f"[WaterQuality] Loaded CSV: {len(df)} rows, {len(df.columns)} columns")
 
-        # Auto-detect numeric parameter columns
         numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
-
-        # Try to match known parameter patterns
         matched_cols = []
         for col in numeric_cols:
             col_lower = col.lower()
@@ -217,13 +251,11 @@ class WaterQualityDataset(Dataset):
                     matched_cols.append(col)
                     break
 
-        # If no pattern match, just take the first n_params numeric columns
         if len(matched_cols) < 2:
             matched_cols = numeric_cols[:n_params]
         else:
             matched_cols = matched_cols[:n_params]
 
-        # Pad with additional numeric columns if needed
         if len(matched_cols) < n_params:
             remaining = [c for c in numeric_cols if c not in matched_cols]
             matched_cols.extend(remaining[:n_params - len(matched_cols)])
@@ -238,20 +270,13 @@ class WaterQualityDataset(Dataset):
                 f"Available columns: {list(df.columns[:20])}"
             )
 
-        # Extract and clean data
         data = df[self.param_names].copy()
         data = data.ffill().bfill().fillna(0.0)
-
-        # Convert to tensor and normalize
         values = data.values.astype(np.float32)
         self.raw_data = torch.tensor(values, dtype=torch.float32)
-
-        # Store normalization params for denormalization later
         self.mean = self.raw_data.mean(dim=0, keepdim=True)
         self.std  = self.raw_data.std(dim=0, keepdim=True) + 1e-8
         self.data = (self.raw_data - self.mean) / self.std
-
-        # Actual n_params might be less than requested
         self.actual_n_params = actual_n
 
         n_samples = max(0, (len(self.data) - seq_len) // stride)
@@ -263,10 +288,8 @@ class WaterQualityDataset(Dataset):
     def __getitem__(self, idx):
         start = idx * self.stride
         end   = start + self.seq_len
-        x = self.data[start:end]  # [seq_len, n_params]
-        # For VAE: flatten to 1D input vector
-        return x, x  # (input, target) — same for autoencoder
+        x = self.data[start:end]
+        return x, x
 
     def denormalize(self, tensor: torch.Tensor) -> torch.Tensor:
-        """Convert normalized values back to original scale."""
         return tensor * self.std + self.mean
